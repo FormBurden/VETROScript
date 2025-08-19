@@ -237,14 +237,32 @@ def main(data_dir=None, gui_out_path=None):
         # Conduit + Vault rule checks and sheets
         conduit_results = run_all_conduit_checks()
         vault_results   = run_all_vault_checks()
-        # DEBUG: show only these two vaults if they were flagged
-        _ids = {
-            "f6d14ff8-fa96-40d9-ab22-4c6c2014a6b4",
-            "62726729-eec0-48f9-97a5-73cd865695ef",
-        }
-        print("[DEBUG] Specific 'Vaults Missing Conduit' rows:",
-            [r for r in (vault_results.get("vaults_missing_conduit") or [])
-            if (r.get("Vault Vetro ID") or "") in _ids])
+        # DEBUG: dump only the two vaults we care about into DATA_DIR/_debug_vaults_missing.csv
+        from modules import config
+        import pandas as pd
+
+        # DEBUG: dump only the two vaults we care about (GUI-safe)
+        from modules import config
+        from pathlib import Path
+        import pandas as pd
+
+        ### DEBUG FOR VAULTS ###
+        # _debug_ids = {
+        #     "f6d14ff8-fa96-40d9-ab22-4c6c2014a6b4",
+        #     "62726729-eec0-48f9-97a5-73cd865695ef",
+        # }
+
+        # _df = pd.DataFrame(vault_results.get("vaults_missing_conduit") or [])
+        # out_csv = Path(config.DATA_DIR) / "_debug_vaults_missing.csv"
+
+        # if "Vault Vetro ID" in _df.columns:
+        #     _df[_df["Vault Vetro ID"].isin(_debug_ids)].to_csv(out_csv, index=False)
+        # else:
+        #     # create an empty file so you know the key/columns didn't match
+        #     pd.DataFrame().to_csv(out_csv, index=False)
+
+
+
 
 
         # Only create the sheets if there’s data, unless SHOW_ALL_SHEETS is on
