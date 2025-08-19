@@ -141,8 +141,6 @@ def find_distributions_without_conduit() -> List[dict]:
             })
     return out
 
-
-
 # ------------------------------------------------------
 # Rule: Conduit Type must be one of the allowed values
 # ------------------------------------------------------
