@@ -1,0 +1,337 @@
+# modules/simple_scripts/vault_rules.py
+# Vault rules that (by necessity) reference conduit geometry.
+#
+# Data sources:
+#   - Conduits:  *conduit*.geojson
+#   - Vaults:    *vault*.geojson  (via geojson_loader.load_features('vault','vetro_id'))
+#
+# Rules implemented:
+#   A) Vaults must sit on Conduit (flag any vault point with no conduit touching it).
+#   B) Vault spacing along the same conduit run must be ≤ 500 ft between consecutive vaults.
+#      • If a conduit run has <2 vaults and its length > 500 ft, flag that run.
+#   C) Sharp bends (included angle < 130°) must have a vault at the bend OR a vault within
+#      300 ft along the run from that bend.
+#
+# Notes:
+#   • All file I/O uses modules.config.DATA_DIR.
+#   • Proximity checks use THRESHOLD_M (≈ 3 ft).
+#   • Distances are geodesic (haversine) and converted to feet.
+
+from __future__ import annotations
+
+import glob
+import json
+from typing import Dict, List, Tuple, Iterable
+
+import modules.config
+from modules.simple_scripts.geojson_loader import load_features
+from modules.basic.distance_utils import haversine, THRESHOLD_M, bearing
+
+M_TO_FT = 3.28084
+
+
+# -----------------------------
+# Conduit geometry helpers
+# -----------------------------
+def _load_conduits() -> List[dict]:
+    """
+    Load every *conduit*.geojson feature.
+    Each returned dict has:
+      {
+        'id': <ID or ''>,
+        'vetro_id': <vetro_id or ''>,
+        'segments': [ [(lat,lon), ...], ... ]   # polyline segments
+      }
+    """
+    feats: List[dict] = []
+    for path in glob.glob(f"{modules.config.DATA_DIR}/*conduit*.geojson"):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                gj = json.load(f)
+        except Exception:
+            continue
+
+        for feat in gj.get("features", []) or []:
+            props = (feat.get("properties") or {}) if isinstance(feat, dict) else {}
+            geom  = (feat.get("geometry") or {}) if isinstance(feat, dict) else {}
+            coords= geom.get("coordinates") or []
+            gtyp  = (geom.get("type") or "").strip()
+
+            segs: List[List[Tuple[float,float]]] = []
+            if gtyp == "LineString":
+                segs = [coords]
+            elif gtyp == "MultiLineString":
+                segs = coords
+            else:
+                continue
+
+            poly: List[List[Tuple[float,float]]] = []
+            for seg in segs:
+                if not seg or len(seg) < 2:
+                    continue
+                # GeoJSON lon,lat → (lat,lon)
+                poly.append([(round(lat, 6), round(lon, 6)) for lon, lat in seg])
+
+            feats.append({
+                "id":       (props.get("ID") or props.get("id") or "").strip(),
+                "vetro_id": (props.get("vetro_id") or props.get("Vetro ID") or "").strip(),
+                "segments": poly,
+            })
+
+    return feats
+
+
+def _collect_conduit_vertices(conduits: Iterable[dict]) -> List[Tuple[float,float]]:
+    verts: List[Tuple[float,float]] = []
+    for c in conduits:
+        for seg in c.get("segments", []):
+            verts.extend(seg)
+    return verts
+
+
+def _polyline_length_m(seg: List[Tuple[float,float]]) -> float:
+    if not seg or len(seg) < 2:
+        return 0.0
+    dist = 0.0
+    for i in range(1, len(seg)):
+        a = seg[i-1]; b = seg[i]
+        dist += haversine(a[0], a[1], b[0], b[1])
+    return dist
+
+
+def _closest_vertex_index(seg: List[Tuple[float,float]], pt: Tuple[float,float]) -> int:
+    """Return index of vertex in seg that is closest (by haversine) to pt."""
+    lat, lon = pt
+    best_i, best_d = 0, float("inf")
+    for i, (slat, slon) in enumerate(seg):
+        d = haversine(lat, lon, slat, slon)
+        if d < best_d:
+            best_d, best_i = d, i
+    return best_i
+
+
+def _distance_along(seg: List[Tuple[float,float]], i0: int, i1: int) -> float:
+    """Path distance (meters) along seg from vertex i0 to i1 (inclusive)."""
+    if i0 == i1:
+        return 0.0
+    lo, hi = (i0, i1) if i0 <= i1 else (i1, i0)
+    # sum edges between lo..hi
+    dist = 0.0
+    for j in range(lo+1, hi+1):
+        a, b = seg[j-1], seg[j]
+        dist += haversine(a[0], a[1], b[0], b[1])
+    return dist
+
+
+def _angle_diff(a: float, b: float) -> float:
+    """Smallest absolute difference between two bearings (deg in [0,180])."""
+    d = abs((a - b + 180) % 360 - 180)
+    return d
+
+
+# ---------------------------------
+# A) Vault must sit on conduit
+# ---------------------------------
+def find_vaults_missing_conduit() -> List[dict]:
+    """
+    Every vault coordinate must have conduit on it.
+
+    Returns rows:
+      { "Vault Vetro ID": <vetro_id>, "Issue": "No Conduit at vault" }
+    """
+    conduits = _load_conduits()
+    conduit_vertices = _collect_conduit_vertices(conduits)
+
+    vault_coords, vault_map = load_features("vault", "vetro_id")
+    out: List[dict] = []
+    for (lat, lon) in vault_coords:
+        # touch if within THRESHOLD_M of any conduit vertex
+        has_touch = any(haversine(lat, lon, clat, clon) <= THRESHOLD_M
+                        for (clat, clon) in conduit_vertices)
+        if not has_touch:
+            out.append({
+                "Vault Vetro ID": vault_map.get((round(lat, 6), round(lon, 6)), ""),
+                "Issue": "No Conduit at vault",
+            })
+    return out
+
+
+# ---------------------------------------------------------
+# B) Vault spacing along same conduit ≤ 500 ft (default)
+# ---------------------------------------------------------
+def find_vault_spacing_issues(max_gap_ft: float = 500.0) -> List[dict]:
+    """
+    Walk each conduit polyline; project touching vaults to closest vertices; compute along-run
+    distances between consecutive vaults; flag when gap > max_gap_ft. If a run has <2 vaults and
+    its total length > max_gap_ft, flag the run.
+
+    Returns rows:
+      {
+        "Conduit ID": <id>,
+        "Conduit Vetro ID": <vetro_id>,
+        "From Vault": <vetro_id or "(start)">,
+        "To Vault": <vetro_id or "(end)">,
+        "Distance (ft)": <float>,
+        "Limit (ft)": <max_gap_ft>,
+        "Issue": "Vault spacing exceeds 500 ft"
+      }
+    """
+    vault_coords, vault_map = load_features("vault", "vetro_id")
+
+    out: List[dict] = []
+    lim_m = float(max_gap_ft) / M_TO_FT
+
+    for c in _load_conduits():
+        for seg in c.get("segments", []):
+            if not seg or len(seg) < 2:
+                continue
+
+            # collect vaults that touch this segment (by nearest-vertex proximity)
+            touching: List[tuple[int, str]] = []
+            for (vlat, vlon) in vault_coords:
+                idx = _closest_vertex_index(seg, (vlat, vlon))
+                if haversine(vlat, vlon, seg[idx][0], seg[idx][1]) <= THRESHOLD_M:
+                    touching.append((idx, vault_map.get((round(vlat, 6), round(vlon, 6)), "")))
+
+            touching.sort(key=lambda t: t[0])
+
+            run_len_ft = _polyline_length_m(seg) * M_TO_FT
+
+            if len(touching) < 2 and run_len_ft > float(max_gap_ft):
+                out.append({
+                    "Conduit ID": c.get("id", ""),
+                    "Conduit Vetro ID": c.get("vetro_id", ""),
+                    "From Vault": touching[0][1] if touching else "(none)",
+                    "To Vault": "(none)",
+                    "Distance (ft)": round(run_len_ft, 1),
+                    "Limit (ft)": float(max_gap_ft),
+                    "Issue": "Vault spacing exceeds 500 ft",
+                })
+                continue
+
+            for i in range(1, len(touching)):
+                i0, v0 = touching[i-1]
+                i1, v1 = touching[i]
+                gap_m = _distance_along(seg, i0, i1)
+                if gap_m > lim_m:
+                    out.append({
+                        "Conduit ID": c.get("id", ""),
+                        "Conduit Vetro ID": c.get("vetro_id", ""),
+                        "From Vault": v0 or "(unknown)",
+                        "To Vault": v1 or "(unknown)",
+                        "Distance (ft)": round(gap_m * M_TO_FT, 1),
+                        "Limit (ft)": float(max_gap_ft),
+                        "Issue": "Vault spacing exceeds 500 ft",
+                    })
+
+    return out
+
+
+# ------------------------------------------------------------------------
+# C) Sharp bends (<130° included) need a vault at bend or within 300 ft
+# ------------------------------------------------------------------------
+def find_bend_vault_issues(angle_threshold_deg: float = 130.0, max_distance_ft: float = 300.0) -> List[dict]:
+    """
+    For every interior vertex in each conduit run:
+      - Compute included_angle = 180 - |bearing_diff|.
+      - If included_angle < angle_threshold_deg (sharp bend), require:
+          • a vault at the bend (within THRESHOLD_M), OR
+          • the nearest vault along the run within max_distance_ft.
+      - Otherwise flag.
+
+    Returns rows:
+      {
+        "Conduit ID": <id>,
+        "Conduit Vetro ID": <vetro_id>,
+        "Bend Angle (deg)": <float>,
+        "Nearest Vault": <vetro_id or "(none)">,
+        "Distance (ft)": <float or ''>,
+        "Limit (ft)": <max_distance_ft>,
+        "Issue": "Sharp bend without nearby vault"
+      }
+    """
+    vault_coords, vault_map = load_features("vault", "vetro_id")
+    lim_m = float(max_distance_ft) / M_TO_FT
+
+    out: List[dict] = []
+
+    for c in _load_conduits():
+        for seg in c.get("segments", []):
+            if len(seg) < 3:
+                continue
+
+            # precompute bearings for consecutive edges
+            bearings: List[float] = []
+            for i in range(1, len(seg)):
+                a = seg[i-1]; b = seg[i]
+                bearings.append(bearing(a[0], a[1], b[0], b[1]))
+
+            # interior vertices only
+            for i in range(1, len(seg) - 1):
+                b1 = bearings[i-1]
+                b2 = bearings[i]
+                turn = _angle_diff(b1, b2)     # 0 straight, 180 U-turn
+                included = 180.0 - turn        # smaller = sharper
+
+                if included >= float(angle_threshold_deg):
+                    continue  # not sharp
+
+                bend_pt = seg[i]
+
+                # vault exactly at the bend?
+                has_vault_here = any(haversine(bend_pt[0], bend_pt[1], vlat, vlon) <= THRESHOLD_M
+                                     for (vlat, vlon) in vault_coords)
+                if has_vault_here:
+                    continue
+
+                # nearest vault along-run from this vertex
+                touching_ix_to_id: Dict[int, str] = {}
+                for (vlat, vlon) in vault_coords:
+                    j = _closest_vertex_index(seg, (vlat, vlon))
+                    if haversine(vlat, vlon, seg[j][0], seg[j][1]) <= THRESHOLD_M:
+                        touching_ix_to_id[j] = vault_map.get((round(vlat, 6), round(vlon, 6)), "")
+
+                nearest_d_m = float("inf")
+                nearest_v_id = "(none)"
+
+                # search left
+                for j in range(i-1, -1, -1):
+                    if j in touching_ix_to_id:
+                        d = _distance_along(seg, j, i)
+                        nearest_d_m = d
+                        nearest_v_id = touching_ix_to_id[j] or "(unknown)"
+                        break
+                # search right
+                for j in range(i+1, len(seg)):
+                    if j in touching_ix_to_id:
+                        d = _distance_along(seg, i, j)
+                        if d < nearest_d_m:
+                            nearest_d_m = d
+                            nearest_v_id = touching_ix_to_id[j] or "(unknown)"
+                        break
+
+                if nearest_d_m <= lim_m:
+                    continue
+
+                out.append({
+                    "Conduit ID": c.get("id", ""),
+                    "Conduit Vetro ID": c.get("vetro_id", ""),
+                    "Bend Angle (deg)": round(included, 1),
+                    "Nearest Vault": nearest_v_id,
+                    "Distance (ft)": (round(nearest_d_m * M_TO_FT, 1) if nearest_d_m != float("inf") else ""),
+                    "Limit (ft)": float(max_distance_ft),
+                    "Issue": "Sharp bend without nearby vault",
+                })
+
+    return out
+
+
+# ---------------------------------------
+# Aggregator (for convenience)
+# ---------------------------------------
+def run_all_vault_checks() -> dict[str, List[dict]]:
+    return {
+        "vaults_missing_conduit":   find_vaults_missing_conduit(),
+        "vault_spacing_issues":     find_vault_spacing_issues(),
+        "bend_vault_issues":        find_bend_vault_issues(),
+    }
