@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local config & secrets (keep an example file instead)
+.env
+.env.*
+config.py
+*.secret.json
+*.private.json
+
+# Generated outputs & data
+outputs/
+dist/
+build/
+*.log
+*.tmp
+*.bak
+data/
+local_data/
+*.db
+*.sqlite
+
+# Large geo/Excel artifacts (keep curated samples only)
+*.xlsx
+*.xlsm
+*.gpkg
+*.shp
+*.shx
+*.dbf
+*.prj
+*.zip
