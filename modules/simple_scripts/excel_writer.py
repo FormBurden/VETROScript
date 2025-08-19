@@ -1256,107 +1256,101 @@ def write_conduit_sheet(wb, results: dict):
 
 def write_vaults_sheet(wb, results: dict):
     """
-    Create a 'Vaults' worksheet with:
+    Create a 'Vaults' worksheet laid out side-by-side:
       • Vaults Missing Conduit (left)
-      • Vault Spacing > 500 ft (right)
-      • Sharp Bends Without Nearby Vault (<130°, >300 ft) (full width below)
+      • Vault Spacing > 500 ft (middle)
+      • Sharp Bends Without Nearby Vault (<130°, >300 ft) (right)
     `results` is the dict returned by run_all_vault_checks().
     """
     from openpyxl.styles import Alignment, Font
 
-    ws = wb.create_sheet(title='Vaults')
-    ws.freeze_panes = 'A3'
+    def _to_num(x):
+        try:
+            # Accept int/float or numeric strings; otherwise return original
+            return float(x)
+        except Exception:
+            s = str(x).strip()
+            try:
+                return float(s.replace(",", ""))
+            except Exception:
+                return x
 
+    ws = wb.create_sheet(title='Vaults')
+    ws.freeze_panes = 'A3'  # lock titles (row 1) + headers (row 2)
+
+    # Data
     missing = results.get('vaults_missing_conduit', []) or []
     spacing = results.get('vault_spacing_issues', []) or []
     bends   = results.get('bend_vault_issues', []) or []
 
-    # Left: Missing conduit
-    left_title = "Vaults Missing Conduit"
+    # Block definitions
+    left_title   = "Vaults Missing Conduit"
     left_headers = ["Vault Vetro ID", "Issue"]
     left_rows = [
         [str(row.get("Vault Vetro ID","")), str(row.get("Issue",""))]
         for row in missing
     ]
 
-    # Right: Spacing issues
-    right_title = "Vault Spacing > 500 ft"
-    right_headers = ["Conduit ID", "Conduit Vetro ID", "From Vault", "To Vault", "Distance (ft)", "Limit (ft)", "Issue"]
-    right_rows = [[
+    mid_title   = "Vault Spacing > 500 ft"
+    mid_headers = ["Conduit ID", "Conduit Vetro ID", "From Vault", "To Vault", "Distance (ft)", "Limit (ft)", "Issue"]
+    mid_rows = [[
         str(row.get("Conduit ID","")),
         str(row.get("Conduit Vetro ID","")),
         str(row.get("From Vault","")),
         str(row.get("To Vault","")),
-        (float(row.get("Distance (ft)")) if str(row.get("Distance (ft)","")).replace('.','',1).isdigit() else str(row.get("Distance (ft)",""))),
-        (float(row.get("Limit (ft)")) if str(row.get("Limit (ft)","")).replace('.','',1).isdigit() else str(row.get("Limit (ft)",""))),
+        _to_num(row.get("Distance (ft)","")),
+        _to_num(row.get("Limit (ft)","")),
         str(row.get("Issue","")),
     ] for row in spacing ]
 
-    # Below: Bend issues
-    below_title = "Sharp Bends Without Nearby Vault (<130°, >300 ft)"
-    below_headers = ["Conduit ID", "Conduit Vetro ID", "Bend Angle (deg)", "Nearest Vault", "Distance (ft)", "Limit (ft)", "Issue"]
-    below_rows = [[
+    right_title   = "Sharp Bends Without Nearby Vault (<130°, >300 ft)"
+    right_headers = ["Conduit ID", "Conduit Vetro ID", "Bend Angle (deg)", "Nearest Vault", "Distance (ft)", "Limit (ft)", "Issue"]
+    right_rows = [[
         str(row.get("Conduit ID","")),
         str(row.get("Conduit Vetro ID","")),
-        (float(row.get("Bend Angle (deg)")) if str(row.get("Bend Angle (deg)","")).replace('.','',1).isdigit() else str(row.get("Bend Angle (deg)",""))),
+        _to_num(row.get("Bend Angle (deg)","")),
         str(row.get("Nearest Vault","")),
-        (float(row.get("Distance (ft)")) if str(row.get("Distance (ft)","")).replace('.','',1).isdigit() else str(row.get("Distance (ft)",""))),
-        (float(row.get("Limit (ft)")) if str(row.get("Limit (ft)","")).replace('.','',1).isdigit() else str(row.get("Limit (ft)",""))),
+        _to_num(row.get("Distance (ft)","")),
+        _to_num(row.get("Limit (ft)","")),
         str(row.get("Issue","")),
     ] for row in bends ]
 
-    DETAIL_ROW = 1
-    LEFT_COL_START = 1
-    RIGHT_COL_START = 4
+    # Layout (side-by-side)
+    TITLE_ROW    = 1
+    HEADERS_ROW  = 2
+    DATA_ROW     = 3
+    GAP_COLS     = 1  # one blank column between blocks
 
-    # Draw Left block
-    ws.merge_cells(start_row=DETAIL_ROW, start_column=LEFT_COL_START,
-                   end_row=DETAIL_ROW, end_column=LEFT_COL_START + len(left_headers) - 1)
-    th = ws.cell(row=DETAIL_ROW, column=LEFT_COL_START, value=left_title)
-    th.font = Font(bold=True); th.alignment = Alignment(horizontal="center")
+    LEFT_COL_START  = 1
+    MID_COL_START   = LEFT_COL_START + len(left_headers) + GAP_COLS
+    RIGHT_COL_START = MID_COL_START + len(mid_headers) + GAP_COLS
 
-    for i, h in enumerate(left_headers, start=LEFT_COL_START):
-        hc = ws.cell(row=DETAIL_ROW + 1, column=i, value=h)
-        hc.font = Font(bold=True); hc.alignment = Alignment(horizontal="center")
+    def draw_block(title, headers, rows, col_start):
+        # Title
+        ws.merge_cells(start_row=TITLE_ROW, start_column=col_start,
+                       end_row=TITLE_ROW, end_column=col_start + len(headers) - 1)
+        th = ws.cell(row=TITLE_ROW, column=col_start, value=title)
+        th.font = Font(bold=True)
+        th.alignment = Alignment(horizontal="center")
 
-    r = DETAIL_ROW + 2
-    for row_vals in left_rows:
-        for i, val in enumerate(row_vals, start=LEFT_COL_START):
-            ws.cell(row=r, column=i, value=val)
-        r += 1
+        # Headers
+        for i, h in enumerate(headers, start=col_start):
+            hc = ws.cell(row=HEADERS_ROW, column=i, value=h)
+            hc.font = Font(bold=True)
+            hc.alignment = Alignment(horizontal="center")
 
-    # Draw Right block
-    ws.merge_cells(start_row=DETAIL_ROW, start_column=RIGHT_COL_START,
-                   end_row=DETAIL_ROW, end_column=RIGHT_COL_START + len(right_headers) - 1)
-    th2 = ws.cell(row=DETAIL_ROW, column=RIGHT_COL_START, value=right_title)
-    th2.font = Font(bold=True); th2.alignment = Alignment(horizontal="center")
+        # Rows
+        r = DATA_ROW
+        for row_vals in rows:
+            for i, val in enumerate(row_vals, start=col_start):
+                ws.cell(row=r, column=i, value=val)
+            r += 1
 
-    for i, h in enumerate(right_headers, start=RIGHT_COL_START):
-        hc = ws.cell(row=DETAIL_ROW + 1, column=i, value=h)
-        hc.font = Font(bold=True); hc.alignment = Alignment(horizontal="center")
+    # Draw all three blocks on the same rows
+    draw_block(left_title,  left_headers,  left_rows,  LEFT_COL_START)
+    draw_block(mid_title,   mid_headers,   mid_rows,   MID_COL_START)
+    draw_block(right_title, right_headers, right_rows, RIGHT_COL_START)
 
-    r2 = DETAIL_ROW + 2
-    for row_vals in right_rows:
-        for i, val in enumerate(row_vals, start=RIGHT_COL_START):
-            ws.cell(row=r2, column=i, value=val)
-        r2 += 1
-
-    # Draw Below block (starting a few rows after the tallest of left/right)
-    last_row = max(r, r2) + 2
-    ws.merge_cells(start_row=last_row, start_column=LEFT_COL_START,
-                   end_row=last_row, end_column=LEFT_COL_START + len(below_headers) - 1)
-    th3 = ws.cell(row=last_row, column=LEFT_COL_START, value=below_title)
-    th3.font = Font(bold=True); th3.alignment = Alignment(horizontal="center")
-
-    for i, h in enumerate(below_headers, start=LEFT_COL_START):
-        hc = ws.cell(row=last_row + 1, column=i, value=h)
-        hc.font = Font(bold=True); hc.alignment = Alignment(horizontal="center")
-
-    r3 = last_row + 2
-    for row_vals in below_rows:
-        for i, val in enumerate(row_vals, start=LEFT_COL_START):
-            ws.cell(row=r3, column=i, value=val)
-        r3 += 1
 
 
 def save_workbook(wb, path):
