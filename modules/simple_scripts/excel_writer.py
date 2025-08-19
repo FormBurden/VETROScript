@@ -162,107 +162,6 @@ def write_network_statistics(wb, stats):
     auto_size(wb)
     apply_borders(ws)
 
-
-
-
-# def write_network_statistics(wb, stats):
-#     """
-#     Inserts a ‘Network Statistics’ sheet at the front (index=0)
-#     and writes the key counts and vault names.
-#     """
-#     # 1) Create the sheet at index 0
-#     ws = wb.create_sheet(title='PON Statistics', index=0)
-#     # ── freeze the top two rows (header + column titles)
-#     ws.freeze_panes = 'A3'
-
-#     # 1) Big merged title in row 1
-#     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=2)
-#     header = ws.cell(
-#         row=1, column=1,
-#         value='Misc Network Info'
-#     )
-#     header.alignment = Alignment(horizontal='center')
-#     header.font      = Font(bold=True)
-
-#     # 2) Column titles on row 2 (bold + centered)
-#     cols = ['Metric','Value']
-#     for col_idx, title in enumerate(cols, start=1):
-#         cell = ws.cell(row=2, column=col_idx, value=title)
-#         cell.font      = Font(bold=True)
-#         cell.alignment = Alignment(horizontal='center')
-
-#     # 3) Your key/value rows at row 3+
-#     rows = [
-#         ('NAPs',                         stats['nap_count']),
-#         ('Service Locations',            stats['service_location_count']),
-#         ('NIDs',                         stats['nid_count']),
-#         ('Power Poles',                  stats['power_pole_count']),
-#         ('Vaults',                       stats['vault_count_excluding_t3']),
-#         ('T3 Vault',                     ', '.join(stats['t3_names'])),
-#         ('Fiber-Drop Issues',            stats.get('fiber_drop_issues', 0)),
-#         ('Slack Loop Issues',            stats.get('slack_dist_issues', 0) + stats.get('underground_slack_issues', 0) + stats.get('aerial_slack_issues', 0) + stats.get('tail_end_slack_issues', 0)),
-#         ('Footage Issues',               stats.get('footage_issues', 0)),
-#         ('NID Drop Issues',              stats.get('nid_drop_issues', 0)),
-#         ('Power Pole Issues',            stats.get('power_pole_issues', 0)),
-#         ('SL Attributes Issues',          stats.get('svc_attr_issues', 0)),
-#         # NEW:
-#         ('Dist/NAP Walker Issues',       stats.get('dist_nap_walker_issues', 0)),
-#         ('NAP Issues',                   stats.get('nap_mismatch_issues', 0) + stats.get('nap_naming_issues', 0) + stats.get('nap_spec_warnings', 0)),
-#     ]
-
-#     start_row = 3
-#     for idx, (label, val) in enumerate(rows, start=start_row):
-#         cell_label = ws.cell(row=idx, column=1, value=label)
-#         cell_value = ws.cell(row=idx, column=2, value=val)
-#         # Bold any *issue* row when its count > 0
-#         if isinstance(val, int) and val > 0 and idx >= start_row + 6:
-#             cell_label.font = Font(bold=True)
-#             cell_value.font = Font(bold=True)
-
-#     # 4) Center-align column B (the “Value” column)
-#     for row in ws.iter_rows(min_row=1, min_col=2, max_col=2, max_row=ws.max_row):
-#         for cell in row:
-#             cell.alignment = Alignment(horizontal='center')
-
-#     # —— Beginning in column D, list each data-folder pattern and whether files exist —— 
-#     ws.cell(row=1, column=4, value='PON Layers Missing/Present')
-#     ws.cell(row=1, column=5, value='Status')
-#     ws.cell(row=1, column=4).font = Font(bold=True)
-#     ws.cell(row=1, column=5).font = Font(bold=True)
-
-#     patterns = [
-#         ('NAPs',                     f"{modules.config.DATA_DIR}/nap*.geojson"),
-#         ('Service Locations',        f"{modules.config.DATA_DIR}/service-location*.geojson"),
-#         ('Distribution Aerial',      f"{modules.config.DATA_DIR}/*fiber-distribution-aerial*.geojson"),
-#         ('Distribution Underground', f"{modules.config.DATA_DIR}/*fiber-distribution-underground*.geojson"),
-#         ('Slack-Loops',              f"{modules.config.DATA_DIR}/*slack-loop*.geojson"),
-#         ('Vaults',                   f"{modules.config.DATA_DIR}/*vault*.geojson"),
-#         ('Fiber-Drops',              f"{modules.config.DATA_DIR}/*fiber-drop*.geojson"),
-#         ('NIDs',                     f"{modules.config.DATA_DIR}/*ni-ds*.geojson"),
-#     ]
-
-#     for idx, (desc, patt) in enumerate(patterns, start=3):
-#         # description cell
-#         desc_cell = ws.cell(row=idx, column=4, value=desc)
-
-#         # check existence
-#         exists = bool(glob.glob(patt))
-
-#         # status checkbox
-#         symbol = '☑' if exists else '☐'
-#         cell   = ws.cell(row=idx, column=5, value=symbol)
-#         cell.alignment = Alignment(horizontal='center')
-#         # color the check: green if present, red if missing
-#         font_color = '008000' if exists else 'FF0000'
-#         cell.font   = Font(color=font_color)
-#         bg_color    = 'C6EFCE' if exists else 'FFC7CE'
-#         cell.fill   = PatternFill(fill_type='solid', start_color=bg_color)
-
-#         # Bold the description when missing (red)
-#         if not exists:
-#             desc_cell.font = Font(bold=True)
-
-
 def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
     """
     Create an Excel sheet named 'Distribution and NAP Walker' from the issues
@@ -1439,11 +1338,6 @@ def write_vaults_sheet(wb, results: dict):
 
 
 # --- borders helper ---
-# ─────────────────────────────────────────────────────────────────────────────
-# Excel styling — headers thick outline + thin inner lines; data thin grid
-# This function replaces/implements apply_borders(ws) and sheet-specific helpers.
-# It auto-detects custom merged headers and side-by-side blocks.
-# ─────────────────────────────────────────────────────────────────────────────
 def apply_borders(ws):
     """
     Apply borders to a worksheet so that:
@@ -1538,8 +1432,11 @@ def apply_borders(ws):
 
     # ───────────── Sheet-specific layouts ─────────────
     if title == 'PON Statistics':
-        # Merged banner row 1 + column header row 2; data row 3+
+        # Left block: merged banner row 1 + column header row 2; data row 3+ (A:B)
         style_header_and_data((1, 2), 3, 1, 2)
+        # NEW Right block: single-row header on row 1; data row 3+ (D:E)
+        # ("PON Layers Missing/Present" | "Status")
+        style_header_and_data((1, 1), 3, 4, 5)
         return
 
     if title == 'Drop Issues':
@@ -1630,8 +1527,6 @@ def apply_borders(ws):
 
     # ───────────── Default fallback: treat row 1 as header ─────────────
     style_header_and_data((1, 1), 2, 1, max_c)
-
-
 
 def save_workbook(wb, path):
     """
