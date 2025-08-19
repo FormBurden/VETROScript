@@ -816,7 +816,7 @@ def write_nid_issues(wb, nid_issues: list):
         cell.font = Font(bold=True)
 
     # Freeze just the first row (banner)
-    ws.freeze_panes = 'A2'
+    ws.freeze_panes = 'A3'
 
     # Data (from row 3)
     for r, issue in enumerate(nid_issues or [], start=3):
@@ -1380,12 +1380,12 @@ from openpyxl.styles import Border, Side
 def apply_borders(ws):
     """
     Thick black outline around real table headers; thin borders inside headers and on all data.
-    Header detection rules:
-      - Two-row header block: a bold title row (≥1 bold cell) immediately followed by a
-        strong-bold label row (≥2 bold cells). Only these two rows are boxed together.
-      - Single-row header: a row with ≥2 bold cells (typical column labels) is boxed alone.
-      - Rows with only 0–1 bold cells (titles, blurbs like WIP notices, or bolded metric names)
-        are NOT boxed; they will only receive thin borders if part of data.
+
+    Pairing rule:
+      - Two-row header block ONLY if the title row has >= 2 bold cells AND the next row
+        (label row) has >= 2 bold cells.
+      - If the line above the labels is a single merged/blurb (only 1 bold cell),
+        DON'T pair it; box the labels row alone.
     """
     thin  = Side(border_style="thin",  color="000000")
     thick = Side(border_style="thick", color="000000")
@@ -1417,8 +1417,7 @@ def apply_borders(ws):
         return cnt
 
     def _nonempty_blocks(row_idx):
-        blocks = []
-        c = 1
+        blocks, c = [], 1
         while c <= ws.max_column:
             while c <= ws.max_column and (ws.cell(row=row_idx, column=c).value in (None, "")):
                 c += 1
@@ -1436,39 +1435,31 @@ def apply_borders(ws):
     r = 1
     while r <= ws.max_row:
         bc = _bold_count(r)
-        # Try two-row header: title (>=1 bold) + labels (>=2 bold)
-        if bc >= 1 and (r + 1) <= ws.max_row and _bold_count(r + 1) >= 2:
-            # split by contiguous non-empty blocks on the label row
-            blocks = _nonempty_blocks(r + 1) or [(1, ws.max_column)]
-            for (c1, c2) in blocks:
+        # Two-row header only when title has >=2 bold AND next row has >=2 bold
+        if bc >= 2 and (r + 1) <= ws.max_row and _bold_count(r + 1) >= 2:
+            for (c1, c2) in _nonempty_blocks(r + 1) or [(1, ws.max_column)]:
                 header_blocks.append((r, r + 1, c1, c2))
             r += 2
             continue
-        # Single-row header: labels only (>=2 bold cells)
+        # Single-row header (labels alone)
         if bc >= 2:
             for (c1, c2) in _nonempty_blocks(r) or [(1, ws.max_column)]:
                 header_blocks.append((r, r, c1, c2))
         r += 1
 
-    # 1) Thin borders inside each header block + thick outline around it
+    # 1) Thin borders inside header blocks + thick outline around each block
     for (r1, r2, c1, c2) in header_blocks:
-        # thin grid inside
         for rr in range(r1, r2 + 1):
             for cc in range(c1, c2 + 1):
                 cell = ws.cell(row=rr, column=cc)
                 if cell.value not in (None, ""):
                     cell.border = _merge_border(cell.border, top=thin, left=thin, right=thin, bottom=thin)
-        # thick outline
         for cc in range(c1, c2 + 1):
-            top_cell = ws.cell(row=r1, column=cc)
-            bot_cell = ws.cell(row=r2, column=cc)
-            top_cell.border = _merge_border(top_cell.border, top=thick)
-            bot_cell.border = _merge_border(bot_cell.border, bottom=thick)
+            ws.cell(row=r1, column=cc).border = _merge_border(ws.cell(row=r1, column=cc).border, top=thick)
+            ws.cell(row=r2, column=cc).border = _merge_border(ws.cell(row=r2, column=cc).border, bottom=thick)
         for rr in range(r1, r2 + 1):
-            left_cell  = ws.cell(row=rr, column=c1)
-            right_cell = ws.cell(row=rr, column=c2)
-            left_cell.border  = _merge_border(left_cell.border,  left=thick)
-            right_cell.border = _merge_border(right_cell.border, right=thick)
+            ws.cell(row=rr, column=c1).border = _merge_border(ws.cell(row=rr, column=c1).border, left=thick)
+            ws.cell(row=rr, column=c2).border = _merge_border(ws.cell(row=rr, column=c2).border, right=thick)
 
     # 2) Thin borders on all other non-empty cells (data), skipping header rows already handled
     header_rows = set()
@@ -1483,6 +1474,7 @@ def apply_borders(ws):
             cell = ws.cell(row=rr, column=cc)
             if cell.value not in (None, ""):
                 cell.border = _merge_border(cell.border, top=thin, left=thin, right=thin, bottom=thin)
+
 
 
 
