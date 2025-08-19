@@ -44,38 +44,60 @@ def natural_key(s: str):
 
 def write_network_statistics(wb, stats):
     """
-    Inserts a ‘Network Statistics’ sheet at the front (index=0)
-    and writes the key counts and vault names.
+    Inserts a ‘PON Statistics’ sheet at the front (index=0) and writes:
+      • Left block (A:B): key network metrics + issue counts
+      • Right block (D:E): "PON Layers Missing/Present" with existence checks
+    Formatting:
+      • Row 1 merged A1:B1 title "Misc Network Info"
+      • Row 2 column headers "Metric", "Value"
+      • Value column (B) centered
+      • Issue rows bolded when count > 0 (rows after 'T3 Vault')
+      • Borders applied by apply_borders(ws) (thick header outline, thin grid)
     """
-    from openpyxl.styles import Alignment, Font
+    from openpyxl.styles import Alignment, Font, PatternFill
+    import glob
+    import modules.config  # required to reference modules.config.DATA_DIR as instructed
 
     # 1) Create the sheet at index 0
     ws = wb.create_sheet(title='PON Statistics', index=0)
-    ws.freeze_panes = 'A3'
+    ws.freeze_panes = 'A3'  # freeze title + column header rows
 
-    # 1) Big merged title in row 1
+    # 2) Big merged title in row 1 (A1:B1)
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=2)
     header = ws.cell(row=1, column=1, value='Misc Network Info')
     header.alignment = Alignment(horizontal='center')
-    header.font      = Font(bold=True)
+    header.font = Font(bold=True)
 
-    # 2) Column titles on row 2 (bold + centered)
-    cols = ['Metric','Value']
+    # 3) Column titles on row 2 (bold + centered)
+    cols = ['Metric', 'Value']
     for col_idx, title in enumerate(cols, start=1):
         cell = ws.cell(row=2, column=col_idx, value=title)
-        cell.font      = Font(bold=True)
+        cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal='center')
 
-    # 3) Rows at row 3+
+    # 4) Left block (A:B): metrics + issues
+    # Robust pulls with defaults; keep naming fallbacks for NAP issue key(s)
+    nap_issue_mismatch = stats.get('nap_mismatch_issues', stats.get('nap_mismatches', 0))
+
+    # Safely join T3 names
+    t3_names = stats.get('t3_names', [])
+    if isinstance(t3_names, (list, tuple)):
+        t3_joined = ', '.join(t3_names)
+    else:
+        t3_joined = str(t3_names) if t3_names is not None else ''
+
     rows = [
         ('NAPs',                         stats.get('nap_count', 0)),
         ('Service Locations',            stats.get('service_location_count', 0)),
         ('NIDs',                         stats.get('nid_count', 0)),
         ('Power Poles',                  stats.get('power_pole_count', 0)),
         ('Vaults',                       stats.get('vault_count_excluding_t3', 0)),
-        ('T3 Vault',                     ', '.join(stats.get('t3_names', []))),
+        ('T3 Vault',                     t3_joined),
         ('Fiber-Drop Issues',            stats.get('fiber_drop_issues', 0)),
-        ('Slack Loop Issues',            stats.get('slack_dist_issues', 0) + stats.get('underground_slack_issues', 0) + stats.get('aerial_slack_issues', 0) + stats.get('tail_end_slack_issues', 0)),
+        ('Slack Loop Issues',            stats.get('slack_dist_issues', 0)
+                                          + stats.get('underground_slack_issues', 0)
+                                          + stats.get('aerial_slack_issues', 0)
+                                          + stats.get('tail_end_slack_issues', 0)),
         ('Footage Issues',               stats.get('footage_issues', 0)),
         ('NID Drop Issues',              stats.get('nid_drop_issues', 0)),
         ('Power Pole Issues',            stats.get('power_pole_issues', 0)),
@@ -83,21 +105,63 @@ def write_network_statistics(wb, stats):
         ('Vault Issues',                 stats.get('vault_issues', 0)),
         ('SL Attributes Issues',         stats.get('svc_attr_issues', 0)),
         ('Dist/NAP Walker Issues',       stats.get('dist_nap_walker_issues', 0)),
-        ('NAP Issues',                   stats.get('nap_mismatches', 0) + stats.get('nap_naming_issues', 0) + stats.get('nap_spec_warnings', 0)),
+        ('NAP Issues',                   nap_issue_mismatch
+                                          + stats.get('nap_naming_issues', 0)
+                                          + stats.get('nap_spec_warnings', 0)),
     ]
 
     start_row = 3
     for idx, (label, val) in enumerate(rows, start=start_row):
         cell_label = ws.cell(row=idx, column=1, value=label)
         cell_value = ws.cell(row=idx, column=2, value=val)
-        # Bold any *issue* row when its count > 0 (heuristic: rows after 'T3 Vault')
-        if isinstance(val, int) and val > 0 and idx >= start_row + 5:
+        # Bold any *issue* row when its count > 0 (rows after 'T3 Vault')
+        if isinstance(val, int) and val > 0 and idx >= (start_row + 6):  # row after T3 Vault
             cell_label.font = Font(bold=True)
             cell_value.font = Font(bold=True)
 
-    # Auto size
+    # Center-align the Value column
+    for row in ws.iter_rows(min_row=1, min_col=2, max_col=2, max_row=ws.max_row):
+        for cell in row:
+            cell.alignment = Alignment(horizontal='center')
+
+    # 5) Right block (D:E): PON Layers Missing/Present
+    ws.cell(row=1, column=4, value='PON Layers Missing/Present').font = Font(bold=True)
+    ws.cell(row=1, column=5, value='Status').font = Font(bold=True)
+
+    patterns = [
+        ('NAPs',                     f"{modules.config.DATA_DIR}/*nap*.geojson"),
+        ('Service Locations',        f"{modules.config.DATA_DIR}/*service-location*.geojson"),
+        ('Distribution Aerial',      f"{modules.config.DATA_DIR}/*fiber-distribution-aerial*.geojson"),
+        ('Distribution Underground', f"{modules.config.DATA_DIR}/*fiber-distribution-underground*.geojson"),
+        ('Slack-Loops',              f"{modules.config.DATA_DIR}/*slack-loop*.geojson"),
+        ('Vaults',                   f"{modules.config.DATA_DIR}/*vault*.geojson"),
+        ('Fiber-Drops',              f"{modules.config.DATA_DIR}/*fiber-drop*.geojson"),
+        ('NIDs',                     f"{modules.config.DATA_DIR}/*ni-ds*.geojson"),
+    ]
+
+    for ridx, (desc, patt) in enumerate(patterns, start=3):
+        desc_cell = ws.cell(row=ridx, column=4, value=desc)
+
+        exists = bool(glob.glob(patt))
+        symbol = '☑' if exists else '☐'
+
+        status_cell = ws.cell(row=ridx, column=5, value=symbol)
+        status_cell.alignment = Alignment(horizontal='center')
+
+        # Green for present, red for missing
+        font_color = '008000' if exists else 'FF0000'
+        bg_color = 'C6EFCE' if exists else 'FFC7CE'
+        status_cell.font = Font(color=font_color)
+        status_cell.fill = PatternFill(fill_type='solid', start_color=bg_color)
+
+        # Emphasize missing line
+        if not exists:
+            desc_cell.font = Font(bold=True)
+
+    # 6) Autosize columns and apply borders
     auto_size(wb)
     apply_borders(ws)
+
 
 
 
@@ -1375,107 +1439,197 @@ def write_vaults_sheet(wb, results: dict):
 
 
 # --- borders helper ---
-from openpyxl.styles import Border, Side
-
+# ─────────────────────────────────────────────────────────────────────────────
+# Excel styling — headers thick outline + thin inner lines; data thin grid
+# This function replaces/implements apply_borders(ws) and sheet-specific helpers.
+# It auto-detects custom merged headers and side-by-side blocks.
+# ─────────────────────────────────────────────────────────────────────────────
 def apply_borders(ws):
     """
-    Thick black outline around real table headers; thin borders inside headers and on all data.
-
-    Pairing rule:
-      - Two-row header block ONLY if the title row has >= 2 bold cells AND the next row
-        (label row) has >= 2 bold cells.
-      - If the line above the labels is a single merged/blurb (only 1 bold cell),
-        DON'T pair it; box the labels row alone.
+    Apply borders to a worksheet so that:
+      • Header areas: thick outline; thin inner grid.
+      • Data areas ("results"): thin outline + thin inner grid.
+    Handles custom merged titles, side-by-side blocks, and description banners
+    based on the actual content written to the sheet.
     """
-    thin  = Side(border_style="thin",  color="000000")
-    thick = Side(border_style="thick", color="000000")
+    from openpyxl.styles import Border, Side
 
-    def _merge_border(existing, top=None, left=None, right=None, bottom=None):
-        if existing is None:
-            existing = Border()
-        return Border(
-            left   = left   if left   is not None else existing.left,
-            right  = right  if right  is not None else existing.right,
-            top    = top    if top    is not None else existing.top,
-            bottom = bottom if bottom is not None else existing.bottom,
-            diagonal=existing.diagonal,
-            diagonal_direction=existing.diagonal_direction,
-            outline=existing.outline,
-            vertical=existing.vertical,
-            horizontal=existing.horizontal,
+    thin  = Side(style='thin', color='000000')
+    thick = Side(style='thick', color='000000')
+
+    def used_max_row_col():
+        max_r = 0
+        max_c = 0
+        for r in ws.iter_rows():
+            for c in r:
+                if c.value not in (None, ""):
+                    if c.row > max_r: max_r = c.row
+                    if c.column > max_c: max_c = c.column
+        return max_r, max_c
+
+    def set_cell_border(cell, left=None, right=None, top=None, bottom=None):
+        b = cell.border
+        cell.border = Border(
+            left=left or b.left, right=right or b.right,
+            top=top or b.top, bottom=bottom or b.bottom
         )
 
-    def _bold_count(row_idx: int) -> int:
-        cnt = 0
-        for c in range(1, ws.max_column + 1):
-            cell = ws.cell(row=row_idx, column=c)
-            try:
-                if cell.font and bool(getattr(cell.font, "bold", False)):
-                    cnt += 1
-            except Exception:
-                pass
-        return cnt
+    def box_outline(min_row, min_col, max_row, max_col, outline_side):
+        # draw outline on the rectangle given
+        for c in range(min_col, max_col + 1):
+            set_cell_border(ws.cell(min_row, c), top=outline_side)
+            set_cell_border(ws.cell(max_row, c), bottom=outline_side)
+        for r in range(min_row, max_row + 1):
+            set_cell_border(ws.cell(r, min_col), left=outline_side)
+            set_cell_border(ws.cell(r, max_col), right=outline_side)
 
-    def _nonempty_blocks(row_idx):
-        blocks, c = [], 1
-        while c <= ws.max_column:
-            while c <= ws.max_column and (ws.cell(row=row_idx, column=c).value in (None, "")):
-                c += 1
-            if c > ws.max_column:
+    def thin_grid(min_row, min_col, max_row, max_col, outline=False):
+        if max_row < min_row or max_col < min_col:
+            return
+        # apply thin borders to all cells in the rectangle
+        for r in range(min_row, max_row + 1):
+            for c in range(min_col, max_col + 1):
+                ws.cell(r, c).border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        if outline:  # reinforce outline as thin (useful for data boxes)
+            box_outline(min_row, min_col, max_row, max_col, thin)
+
+    def last_row_with_data(cols, start_row=1):
+        max_r = 0
+        max_sheet_row, _ = used_max_row_col()
+        for r in range(start_row, max_sheet_row + 1):
+            for c in cols:
+                v = ws.cell(r, c).value
+                if v not in (None, ""):
+                    if r > max_r: max_r = r
+                    break
+        return max_r
+
+    def spans_in_row(row, start_col, end_col):
+        """Find contiguous [start,end] column spans where row has any non-empty."""
+        spans = []
+        in_span = False
+        s = None
+        for c in range(start_col, end_col + 1):
+            v = ws.cell(row, c).value
+            if v not in (None, "") and not in_span:
+                in_span = True; s = c
+            if (v in (None, "")) and in_span:
+                spans.append((s, c - 1)); in_span = False
+        if in_span:
+            spans.append((s, end_col))
+        return spans
+
+    def style_header_and_data(header_rows, data_start_row, min_col, max_col):
+        # thin grid inside header; thick outline around it
+        h_min_row, h_max_row = header_rows
+        if h_max_row >= h_min_row:
+            thin_grid(h_min_row, min_col, h_max_row, max_col)
+            box_outline(h_min_row, min_col, h_max_row, max_col, thick)
+        # data grid — thin box and grid
+        d_last = last_row_with_data(list(range(min_col, max_col + 1)), data_start_row)
+        if d_last and d_last >= data_start_row:
+            thin_grid(data_start_row, min_col, d_last, max_col, outline=True)
+
+    max_r, max_c = used_max_row_col()
+    if max_r == 0 or max_c == 0:
+        return  # nothing to do
+
+    title = (ws.title or "").strip()
+
+    # ───────────── Sheet-specific layouts ─────────────
+    if title == 'PON Statistics':
+        # Merged banner row 1 + column header row 2; data row 3+
+        style_header_and_data((1, 2), 3, 1, 2)
+        return
+
+    if title == 'Drop Issues':
+        # Description banner A1:C3; headers row 4; data row 5+
+        style_header_and_data((1, 4), 5, 1, 3)
+        return
+
+    if title == 'Distribution and NAP Walker':
+        # Row 1 headers; data row 2+
+        style_header_and_data((1, 1), 2, 1, max_c)
+        return
+
+    if title == 'Slack Loop Issues':
+        # Summary header rows 1–3 across 4 columns
+        style_header_and_data((1, 3), 4, 1, 4)
+        # Detail blocks discovered from merged titles on row 5; headers row 6; data row 7+
+        row5_merges = [rng for rng in ws.merged_cells.ranges if rng.min_row == 5]
+        blocks = []
+        if row5_merges:
+            for rng in sorted(row5_merges, key=lambda r: r.min_col):
+                blocks.append((rng.min_col, rng.max_col))
+        else:
+            # fallback: contiguous header spans in row 6
+            blocks = spans_in_row(6, 1, max_c)
+
+        for (c1, c2) in blocks:
+            style_header_and_data((5, 6), 7, c1, c2)
+        return
+
+    if title == 'Footage Issues':
+        # Two side-by-side blocks with merged titles row 1; headers row 2; data row 3+
+        row1_merges = [rng for rng in ws.merged_cells.ranges if rng.min_row == 1]
+        if row1_merges:
+            for rng in sorted(row1_merges, key=lambda r: r.min_col):
+                style_header_and_data((1, 2), 3, rng.min_col, rng.max_col)
+        else:
+            for (c1, c2) in spans_in_row(2, 1, max_c):
+                style_header_and_data((1, 2), 3, c1, c2)
+        return
+
+    if title in ('Vaults', 'Conduit'):
+        # Multiple side-by-side blocks; merged titles row 1; headers row 2; data row 3+
+        row1_merges = [rng for rng in ws.merged_cells.ranges if rng.min_row == 1]
+        if row1_merges:
+            for rng in sorted(row1_merges, key=lambda r: r.min_col):
+                style_header_and_data((1, 2), 3, rng.min_col, rng.max_col)
+        else:
+            for (c1, c2) in spans_in_row(2, 1, max_c):
+                style_header_and_data((1, 2), 3, c1, c2)
+        return
+
+    if title == 'NAP Issues':
+        # Three blocks across; row 1 has block titles; row 2 has headers; data row 3+
+        for (c1, c2) in spans_in_row(2, 1, max_c):
+            style_header_and_data((1, 2), 3, c1, c2)
+        return
+
+    if title in ('Service Location Issues', 'NID Issues'):
+        # Banner row 1 (possibly merged) + header row 2; data row 3+
+        spans = spans_in_row(2, 1, max_c)
+        if spans:
+            for (c1, c2) in spans:
+                style_header_and_data((1, 2), 3, c1, c2)
+        else:
+            style_header_and_data((1, 2), 3, 1, max_c)
+        return
+
+    if title in ('Slack Loop Summary', 'GeoJSON Summary'):
+        # Metrics grid rows 1–4 (two cols)
+        style_header_and_data((1, 4), 5, 1, 2)
+        # "Stacked Slack Loops" table: header row begins with 'Coordinate', 'Count'
+        header_row = None
+        for r in range(1, max_r + 1):
+            v1 = ws.cell(r, 1).value
+            v2 = ws.cell(r, 2).value
+            if (str(v1).strip().lower() == 'coordinate' and
+                str(v2).strip().lower() == 'count'):
+                header_row = r
                 break
-            start = c
-            while c <= ws.max_column and (ws.cell(row=row_idx, column=c).value not in (None, "")):
-                c += 1
-            end = c - 1
-            blocks.append((start, end))
-        return blocks
+        if header_row:
+            style_header_and_data((header_row, header_row), header_row + 1, 1, 3)
+        return
 
-    header_blocks = []  # list of (r1, r2, c1, c2)
+    if title == 'Power Pole Issues':
+        # Merged banner A1:E3; headers row 4; data row 5+
+        style_header_and_data((1, 4), 5, 1, max_c)
+        return
 
-    r = 1
-    while r <= ws.max_row:
-        bc = _bold_count(r)
-        # Two-row header only when title has >=2 bold AND next row has >=2 bold
-        if bc >= 2 and (r + 1) <= ws.max_row and _bold_count(r + 1) >= 2:
-            for (c1, c2) in _nonempty_blocks(r + 1) or [(1, ws.max_column)]:
-                header_blocks.append((r, r + 1, c1, c2))
-            r += 2
-            continue
-        # Single-row header (labels alone)
-        if bc >= 2:
-            for (c1, c2) in _nonempty_blocks(r) or [(1, ws.max_column)]:
-                header_blocks.append((r, r, c1, c2))
-        r += 1
-
-    # 1) Thin borders inside header blocks + thick outline around each block
-    for (r1, r2, c1, c2) in header_blocks:
-        for rr in range(r1, r2 + 1):
-            for cc in range(c1, c2 + 1):
-                cell = ws.cell(row=rr, column=cc)
-                if cell.value not in (None, ""):
-                    cell.border = _merge_border(cell.border, top=thin, left=thin, right=thin, bottom=thin)
-        for cc in range(c1, c2 + 1):
-            ws.cell(row=r1, column=cc).border = _merge_border(ws.cell(row=r1, column=cc).border, top=thick)
-            ws.cell(row=r2, column=cc).border = _merge_border(ws.cell(row=r2, column=cc).border, bottom=thick)
-        for rr in range(r1, r2 + 1):
-            ws.cell(row=rr, column=c1).border = _merge_border(ws.cell(row=rr, column=c1).border, left=thick)
-            ws.cell(row=rr, column=c2).border = _merge_border(ws.cell(row=rr, column=c2).border, right=thick)
-
-    # 2) Thin borders on all other non-empty cells (data), skipping header rows already handled
-    header_rows = set()
-    for (r1, r2, _, _) in header_blocks:
-        for rr in range(r1, r2 + 1):
-            header_rows.add(rr)
-
-    for rr in range(1, ws.max_row + 1):
-        if rr in header_rows:
-            continue
-        for cc in range(1, ws.max_column + 1):
-            cell = ws.cell(row=rr, column=cc)
-            if cell.value not in (None, ""):
-                cell.border = _merge_border(cell.border, top=thin, left=thin, right=thin, bottom=thin)
-
-
+    # ───────────── Default fallback: treat row 1 as header ─────────────
+    style_header_and_data((1, 1), 2, 1, max_c)
 
 
 
