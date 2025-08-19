@@ -5,6 +5,7 @@ __pycache__/
 .eggs/
 .pytest_cache/
 .mypy_cache/
+*.pyo
 
 # Virtual env
 .venv/
