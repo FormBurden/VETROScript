@@ -169,102 +169,187 @@ def run_all_conduit_checks() -> dict[str, List[dict]]:
         "type_issues":        find_conduit_type_issues(),
     }
 
-# NEW: line-proximity based vault/conduit check
-def find_vaults_missing_conduit_by_line(vaults_gdf, conduit_gdf, tolerance_ft=5.0, emit_details=True):
+def find_vaults_missing_conduit(tolerance_ft: float | None = None) -> List[dict]:
     """
-    Return a DataFrame of vaults that do not have conduit LINES within `tolerance_ft`.
-    This solves false positives where a vault sits on top of a conduit segment
-    but not near a 'conduit point' feature.
+    Every vault coordinate must have conduit *under it*.
+    Now checks distance to the nearest *segment* (not only conduit vertices).
 
-    Parameters
-    ----------
-    vaults_gdf : GeoDataFrame
-        Must contain columns: 'vetro_id' (or 'Vetro ID') and geometry (POINT).
-    conduit_gdf : GeoDataFrame
-        Must be LINESTRING/MULTILINESTRING geometry with an id column like 'vetro_id'.
-    tolerance_ft : float
-        Maximum allowed separation between the vault point and the nearest conduit line.
-    emit_details : bool
-        If True, include nearest conduit id and measured distance.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Columns: ['Vault Vetro ID', 'Issue', 'Nearest Conduit Vetro ID', 'Distance (ft)']
-        (the last two only if emit_details=True)
+    Returns rows:
+      { "Vault Vetro ID": <vetro_id>, "Issue": "No Conduit at vault" }
     """
-    import geopandas as gpd
-    import pandas as pd
-    from shapely.geometry import LineString, MultiLineString
+    from math import cos, radians, sqrt
 
-    # Normalize id columns
-    def _norm_id_col(gdf):
-        for c in ['vetro_id', 'Vetro ID', 'VetroID', 'id']:
-            if c in gdf.columns:
-                return c
-        raise KeyError("Expected an id column like 'vetro_id'/'Vetro ID' in input GeoDataFrame.")
+    conduits = _load_conduits()
+    vault_coords, vault_map = load_features("vault", "vetro_id")
 
-    v_id = _norm_id_col(vaults_gdf)
-    c_id = _norm_id_col(conduit_gdf)
+    # Allow an override, else fall back to the global threshold (~3 ft).
+    M_TO_FT = 3.28084
+    tol_m = (float(tolerance_ft) / M_TO_FT) if tolerance_ft is not None else THRESHOLD_M
 
-    # Keep only valid geometries
-    vaults = vaults_gdf[[v_id, 'geometry']].dropna(subset=['geometry']).copy()
-    conduit = conduit_gdf[[c_id, 'geometry']].dropna(subset=['geometry']).copy()
-    conduit = conduit[conduit.geometry.type.isin(['LineString', 'MultiLineString'])].copy()
-    if conduit.empty or vaults.empty:
-        cols = ['Vault Vetro ID', 'Issue']
-        if emit_details:
-            cols += ['Nearest Conduit Vetro ID', 'Distance (ft)']
-        return pd.DataFrame(columns=cols)
+    def _ptseg_distance_m(p: Tuple[float, float],
+                          a: Tuple[float, float],
+                          b: Tuple[float, float]) -> float:
+        """
+        Approximate point-to-segment distance in meters by projecting to a local
+        equirectangular plane (accurate to << 1 ft at these tolerances).
+        """
+        plat, plon = p
+        alat, alon = a
+        blat, blon = b
 
-    # CRS handling: work in meters for accurate distances
-    # (if CRS is missing, assume WGS84 then project)
-    if vaults.crs is None:
-        vaults.set_crs(4326, inplace=True)
-    if conduit.crs is None:
-        conduit.set_crs(vaults.crs, inplace=True)
+        lat0 = (plat + alat + blat) / 3.0
+        m_per_deg_lat = 111320.0
+        m_per_deg_lon = 111320.0 * cos(radians(lat0))
 
-    if vaults.crs.to_epsg() != 3857:
-        vaults_m = vaults.to_crs(3857)
-    else:
-        vaults_m = vaults
+        ax, ay = alon * m_per_deg_lon, alat * m_per_deg_lat
+        bx, by = blon * m_per_deg_lon, blat * m_per_deg_lat
+        px, py =  plon * m_per_deg_lon,  plat * m_per_deg_lat
 
-    if conduit.crs.to_epsg() != 3857:
-        conduit_m = conduit.to_crs(3857)
-    else:
-        conduit_m = conduit
+        vx, vy = (bx - ax), (by - ay)
+        wx, wy = (px - ax), (py - ay)
 
-    # Spatial nearest within tolerance
-    tol_m = float(tolerance_ft) * 0.3048
+        denom = (vx * vx + vy * vy)
+        if denom <= 0.0:
+            # a and b are the same point; distance to that point
+            dx, dy = (px - ax), (py - ay)
+            return sqrt(dx * dx + dy * dy)
 
-    # GeoPandas >=0.12 has sjoin_nearest with max_distance
-    # It returns nearest row even if beyond max_distance unless we filter; so filter by distance after join.
-    joined = gpd.sjoin_nearest(
-        vaults_m,
-        conduit_m,
-        how='left',
-        distance_col='__dist_m',
-        max_distance=tol_m
-    )
+        t = (wx * vx + wy * vy) / denom
+        if t < 0.0:
+            cx, cy = ax, ay
+        elif t > 1.0:
+            cx, cy = bx, by
+        else:
+            cx, cy = (ax + t * vx), (ay + t * vy)
 
-    # Mark vaults with no conduit within tolerance
-    no_match = joined[joined[c_id].isna()][[v_id, '__dist_m']].copy()
-    no_match['Issue'] = 'No Conduit at vault'
+        dx, dy = (px - cx), (py - cy)
+        return sqrt(dx * dx + dy * dy)
 
-    # Prepare output
-    if emit_details:
-        # For matched rows, we’re not reporting them; for unmatched, fill detail cols as empty
-        no_match['Nearest Conduit Vetro ID'] = ''
-        no_match['Distance (ft)'] = no_match['__dist_m'].fillna(pd.NA).astype(float) / 0.3048
-        out = no_match[[v_id, 'Issue', 'Nearest Conduit Vetro ID', 'Distance (ft)']].copy()
-    else:
-        out = no_match[[v_id, 'Issue']].copy()
+    out: List[dict] = []
+    for (vlat, vlon) in vault_coords:
+        on_conduit = False
 
-    out.rename(columns={v_id: 'Vault Vetro ID'}, inplace=True)
-    # Sort for stable output
-    if 'Distance (ft)' in out.columns:
-        out.sort_values(['Distance (ft)', 'Vault Vetro ID'], inplace=True, kind='mergesort', na_position='last')
-    else:
-        out.sort_values(['Vault Vetro ID'], inplace=True, kind='mergesort')
-    out.reset_index(drop=True, inplace=True)
+        # Early-exit as soon as any segment is within tolerance
+        for c in conduits:
+            for seg in c.get("segments", []):
+                if len(seg) < 2:
+                    continue
+                # walk segment edges
+                for i in range(1, len(seg)):
+                    if _ptseg_distance_m((vlat, vlon), seg[i - 1], seg[i]) <= tol_m:
+                        on_conduit = True
+                        break
+                if on_conduit:
+                    break
+            if on_conduit:
+                break
+
+        if not on_conduit:
+            out.append({
+                "Vault Vetro ID": vault_map.get((round(vlat, 6), round(vlon, 6)), ""),
+                "Issue": "No Conduit at vault",
+            })
+
     return out
+
+
+
+# # NEW: line-proximity based vault/conduit check
+# def find_vaults_missing_conduit_by_line(vaults_gdf, conduit_gdf, tolerance_ft=5.0, emit_details=True):
+#     """
+#     Return a DataFrame of vaults that do not have conduit LINES within `tolerance_ft`.
+#     This solves false positives where a vault sits on top of a conduit segment
+#     but not near a 'conduit point' feature.
+
+#     Parameters
+#     ----------
+#     vaults_gdf : GeoDataFrame
+#         Must contain columns: 'vetro_id' (or 'Vetro ID') and geometry (POINT).
+#     conduit_gdf : GeoDataFrame
+#         Must be LINESTRING/MULTILINESTRING geometry with an id column like 'vetro_id'.
+#     tolerance_ft : float
+#         Maximum allowed separation between the vault point and the nearest conduit line.
+#     emit_details : bool
+#         If True, include nearest conduit id and measured distance.
+
+#     Returns
+#     -------
+#     pandas.DataFrame
+#         Columns: ['Vault Vetro ID', 'Issue', 'Nearest Conduit Vetro ID', 'Distance (ft)']
+#         (the last two only if emit_details=True)
+#     """
+#     import geopandas as gpd
+#     import pandas as pd
+#     from shapely.geometry import LineString, MultiLineString
+
+#     # Normalize id columns
+#     def _norm_id_col(gdf):
+#         for c in ['vetro_id', 'Vetro ID', 'VetroID', 'id']:
+#             if c in gdf.columns:
+#                 return c
+#         raise KeyError("Expected an id column like 'vetro_id'/'Vetro ID' in input GeoDataFrame.")
+
+#     v_id = _norm_id_col(vaults_gdf)
+#     c_id = _norm_id_col(conduit_gdf)
+
+#     # Keep only valid geometries
+#     vaults = vaults_gdf[[v_id, 'geometry']].dropna(subset=['geometry']).copy()
+#     conduit = conduit_gdf[[c_id, 'geometry']].dropna(subset=['geometry']).copy()
+#     conduit = conduit[conduit.geometry.type.isin(['LineString', 'MultiLineString'])].copy()
+#     if conduit.empty or vaults.empty:
+#         cols = ['Vault Vetro ID', 'Issue']
+#         if emit_details:
+#             cols += ['Nearest Conduit Vetro ID', 'Distance (ft)']
+#         return pd.DataFrame(columns=cols)
+
+#     # CRS handling: work in meters for accurate distances
+#     # (if CRS is missing, assume WGS84 then project)
+#     if vaults.crs is None:
+#         vaults.set_crs(4326, inplace=True)
+#     if conduit.crs is None:
+#         conduit.set_crs(vaults.crs, inplace=True)
+
+#     if vaults.crs.to_epsg() != 3857:
+#         vaults_m = vaults.to_crs(3857)
+#     else:
+#         vaults_m = vaults
+
+#     if conduit.crs.to_epsg() != 3857:
+#         conduit_m = conduit.to_crs(3857)
+#     else:
+#         conduit_m = conduit
+
+#     # Spatial nearest within tolerance
+#     tol_m = float(tolerance_ft) * 0.3048
+
+#     # GeoPandas >=0.12 has sjoin_nearest with max_distance
+#     # It returns nearest row even if beyond max_distance unless we filter; so filter by distance after join.
+#     joined = gpd.sjoin_nearest(
+#         vaults_m,
+#         conduit_m,
+#         how='left',
+#         distance_col='__dist_m',
+#         max_distance=tol_m
+#     )
+
+#     # Mark vaults with no conduit within tolerance
+#     no_match = joined[joined[c_id].isna()][[v_id, '__dist_m']].copy()
+#     no_match['Issue'] = 'No Conduit at vault'
+
+#     # Prepare output
+#     if emit_details:
+#         # For matched rows, we’re not reporting them; for unmatched, fill detail cols as empty
+#         no_match['Nearest Conduit Vetro ID'] = ''
+#         no_match['Distance (ft)'] = no_match['__dist_m'].fillna(pd.NA).astype(float) / 0.3048
+#         out = no_match[[v_id, 'Issue', 'Nearest Conduit Vetro ID', 'Distance (ft)']].copy()
+#     else:
+#         out = no_match[[v_id, 'Issue']].copy()
+
+#     out.rename(columns={v_id: 'Vault Vetro ID'}, inplace=True)
+#     # Sort for stable output
+#     if 'Distance (ft)' in out.columns:
+#         out.sort_values(['Distance (ft)', 'Vault Vetro ID'], inplace=True, kind='mergesort', na_position='last')
+#     else:
+#         out.sort_values(['Vault Vetro ID'], inplace=True, kind='mergesort')
+#     out.reset_index(drop=True, inplace=True)
+#     return out

@@ -237,6 +237,15 @@ def main(data_dir=None, gui_out_path=None):
         # Conduit + Vault rule checks and sheets
         conduit_results = run_all_conduit_checks()
         vault_results   = run_all_vault_checks()
+        # DEBUG: show only these two vaults if they were flagged
+        _ids = {
+            "f6d14ff8-fa96-40d9-ab22-4c6c2014a6b4",
+            "62726729-eec0-48f9-97a5-73cd865695ef",
+        }
+        print("[DEBUG] Specific 'Vaults Missing Conduit' rows:",
+            [r for r in (vault_results.get("vaults_missing_conduit") or [])
+            if (r.get("Vault Vetro ID") or "") in _ids])
+
 
         # Only create the sheets if there’s data, unless SHOW_ALL_SHEETS is on
         if modules.config.SHOW_ALL_SHEETS or any(conduit_results.values()):
