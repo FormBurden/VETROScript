@@ -97,6 +97,8 @@ def write_network_statistics(wb, stats):
 
     # Auto size
     auto_size(wb)
+    apply_borders(ws)
+
 
 
 # def write_network_statistics(wb, stats):
@@ -298,6 +300,8 @@ def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
             # These are all issues by definition of the source list — log as ERROR for visibility
             logger.error(f"❌ [Distribution and NAP Walker] {line}")
         logger.info("===== End Distribution and NAP Walker =====")
+    apply_borders(ws)
+
 
 
 def write_geojson_summary(
@@ -343,7 +347,6 @@ def write_geojson_summary(
         cell.font = header_font
 
     r += 1
-
 # Stacked Slack Loops data (now sorted by count desc, then NAP ID naturally)
     for coord, cnt in sorted(
         stacked_coords.items(),
@@ -394,6 +397,8 @@ def write_geojson_summary(
         for coord in sorted(slack_missing):
             ws.cell(row=r, column=1, value=f'{coord[0]:.6f}, {coord[1]:.6f}')
             r += 1
+    apply_borders(ws)
+
 
 
 def write_person_sheets(wb, df: pd.DataFrame, patterns: list, id_col: str):
@@ -458,6 +463,8 @@ def write_person_sheets(wb, df: pd.DataFrame, patterns: list, id_col: str):
                 if diff := sorted(sc - sd):
                     ws.cell(row=bot, column=1, value='IDs created but not deleted:')
                     ws.cell(row=bot, column=2, value=', '.join(diff))
+    apply_borders(ws)
+
 
 # DON'T THINK I NEED THIS ANYMORE... BUT I'LL WAIT.
 # def write_missing_slack_sheet(wb, missing_poles: list, power_map: dict):
@@ -535,6 +542,8 @@ def write_fiber_drop_sheet(wb, service_coords, drop_coords, mismatches):
         for row in rows_written:
             logger.error(" | ".join(str(val) if val is not None else "" for val in row))
         logger.info("===== End Drop Issues (Excel Mirror) =====")
+    apply_borders(ws)
+
 
 # /mnt/data/excel_writer.py  (lines 482–643)
 def write_slack_loop_issues_sheet(wb, sd_issues, ug_issues, aerial_issues=None, tail_issues=None):
@@ -698,6 +707,8 @@ def write_slack_loop_issues_sheet(wb, sd_issues, ug_issues, aerial_issues=None, 
 
         # Advance to next block (1-col gutter)
         current_col += width + 1
+    apply_borders(ws)
+
 
 def write_footage_issues_sheet(wb, mismatches):
     """
@@ -773,6 +784,8 @@ def write_footage_issues_sheet(wb, mismatches):
 
     # Freeze header row across both blocks
     ws.freeze_panes = "A3"
+    apply_borders(ws)
+
 
 def write_nid_issues(wb, nid_issues: list):
     from openpyxl.styles import Alignment, Font
@@ -957,6 +970,8 @@ def write_nid_issues(wb, nid_issues: list):
         for line in format_table_lines(headers, rows):
             logger.error(f"[NID Issues] {line}")
         logger.log(_level, "===== End NID Issues (Excel Mirror) =====")
+    apply_borders(ws)
+
 
 def write_service_location_attr_issues(wb, records):
     """
@@ -1026,6 +1041,8 @@ def write_service_location_attr_issues(wb, records):
         for row in rows_written:
             logger.error(" | ".join(str(v) if v is not None else "" for v in row))
         logger.info("===== End Service Location Issues (Excel Mirror) =====")
+    apply_borders(ws)
+
 
 def write_nap_issues_sheet(wb, nap_mismatches, id_format_issues):
     """
@@ -1075,6 +1092,7 @@ def write_nap_issues_sheet(wb, nap_mismatches, id_format_issues):
             ws.cell(row=row, column=c, value=v)
         a_rows.append(vals)
         row += 1
+    
 
     # -------- B: NAP Naming Issues (G–I) --------
     start_b = 7  # column G
@@ -1139,6 +1157,7 @@ def write_nap_issues_sheet(wb, nap_mismatches, id_format_issues):
             logger.error(" | ".join(str(v) if v is not None else "" for v in r))
 
         logger.info("===== End NAP Issues (Excel Mirror) =====")
+    apply_borders(ws)
 
 def write_power_pole_issues_sheet(wb, issues: list[dict]):
     """
@@ -1180,6 +1199,7 @@ def write_power_pole_issues_sheet(wb, issues: list[dict]):
         ws.cell(row=r, column=3, value=issue["angle"])
         ws.cell(row=r, column=4, value=issue.get("note",""))
         ws.cell(row=r, column=5, value="Unanchored bend ≥ threshold")
+    apply_borders(ws)
 
 def write_conduit_sheet(wb, results: dict):
     """
@@ -1253,6 +1273,7 @@ def write_conduit_sheet(wb, results: dict):
         for i, val in enumerate(row_vals, start=RIGHT_COL_START):
             ws.cell(row=r2, column=i, value=val)
         r2 += 1
+    apply_borders(ws)
 
 def write_vaults_sheet(wb, results: dict):
     """
@@ -1350,6 +1371,136 @@ def write_vaults_sheet(wb, results: dict):
     draw_block(left_title,  left_headers,  left_rows,  LEFT_COL_START)
     draw_block(mid_title,   mid_headers,   mid_rows,   MID_COL_START)
     draw_block(right_title, right_headers, right_rows, RIGHT_COL_START)
+    apply_borders(ws)
+
+
+# --- borders helper (replace the previous apply_borders) ---
+from openpyxl.styles import Border, Side
+
+def apply_borders(ws):
+    """
+    Draw a thick black outline around each header block (title row + column-header row)
+    and thin borders inside the header and across all data rows.
+
+    This avoids doubled thick lines between adjacent header cells, so side-by-side
+    tables look like:
+        [ Thick outline for left header ]   [ Thick outline for right header ]
+        thin inner gridlines for both.
+    """
+    thin  = Side(border_style="thin",  color="000000")
+    thick = Side(border_style="thick", color="000000")
+
+    def _merge_border(existing, top=None, left=None, right=None, bottom=None):
+        """Combine with existing Border, preserving previously-set sides."""
+        if existing is None:
+            existing = Border()
+        return Border(
+            left  = left   if left   is not None else existing.left,
+            right = right  if right  is not None else existing.right,
+            top   = top    if top    is not None else existing.top,
+            bottom= bottom if bottom is not None else existing.bottom,
+            diagonal=existing.diagonal,
+            diagonal_direction=existing.diagonal_direction,
+            outline=existing.outline,
+            vertical=existing.vertical,
+            horizontal=existing.horizontal,
+        )
+
+    # --- Find the first two non-empty rows: title row and column-header row ---
+    first = None
+    second = None
+    for r in range(1, ws.max_row + 1):
+        if any((c.value is not None and str(c.value).strip() != "") for c in ws[r]):
+            if first is None:
+                first = r
+            elif second is None:
+                second = r
+                break
+
+    if not first:
+        return
+
+    # If we only have one non-empty row, treat it as a simple header row.
+    if not second:
+        # Thin inside; thick outline across the contiguous non-empty run(s)
+        # Find contiguous blocks of non-empty cells on this row.
+        c = 1
+        while c <= ws.max_column:
+            # Skip empties
+            while c <= ws.max_column and (ws.cell(row=first, column=c).value in (None, "")):
+                c += 1
+            if c > ws.max_column:
+                break
+            start = c
+            while c <= ws.max_column and (ws.cell(row=first, column=c).value not in (None, "")):
+                # thin border on the header cell
+                cell = ws.cell(row=first, column=c)
+                cell.border = _merge_border(cell.border, top=thin, left=thin, right=thin, bottom=thin)
+                c += 1
+            end = c - 1
+            # Thick outline for the block
+            for cc in range(start, end + 1):
+                top_cell = ws.cell(row=first, column=cc)
+                top_cell.border = _merge_border(top_cell.border, top=thick, bottom=thick)
+            # Left/right edges
+            left_cell  = ws.cell(row=first, column=start)
+            right_cell = ws.cell(row=first, column=end)
+            left_cell.border  = _merge_border(left_cell.border,  left=thick)
+            right_cell.border = _merge_border(right_cell.border, right=thick)
+        # Data rows thin borders
+        for r in range(first + 1, ws.max_row + 1):
+            for c in range(1, ws.max_column + 1):
+                cell = ws.cell(row=r, column=c)
+                if cell.value not in (None, ""):
+                    cell.border = _merge_border(cell.border, top=thin, left=thin, right=thin, bottom=thin)
+        return
+
+    # --- Normal case: two-row header block (title + column labels) ---
+    # Identify contiguous non-empty blocks in the *second* row (column labels).
+    col = 1
+    blocks = []
+    while col <= ws.max_column:
+        while col <= ws.max_column and (ws.cell(row=second, column=col).value in (None, "")):
+            col += 1
+        if col > ws.max_column:
+            break
+        start = col
+        while col <= ws.max_column and (ws.cell(row=second, column=col).value not in (None, "")):
+            col += 1
+        end = col - 1
+        blocks.append((start, end))
+
+    # If no blocks detected from the second row, fall back to a single-row header.
+    if not blocks:
+        blocks = [(1, ws.max_column)]
+
+    # 1) Thin borders inside the two header rows for each block
+    for (start, end) in blocks:
+        for r in (first, second):
+            for c in range(start, end + 1):
+                cell = ws.cell(row=r, column=c)
+                cell.border = _merge_border(cell.border, top=thin, left=thin, right=thin, bottom=thin)
+
+        # 2) Apply a single thick outline around the block (first..second rows, start..end cols)
+        # Top & bottom
+        for c in range(start, end + 1):
+            top_cell = ws.cell(row=first,  column=c)
+            bot_cell = ws.cell(row=second, column=c)
+            top_cell.border = _merge_border(top_cell.border, top=thick)
+            bot_cell.border = _merge_border(bot_cell.border, bottom=thick)
+        # Left & right
+        for r in (first, second):
+            left_cell  = ws.cell(row=r, column=start)
+            right_cell = ws.cell(row=r, column=end)
+            left_cell.border  = _merge_border(left_cell.border,  left=thick)
+            right_cell.border = _merge_border(right_cell.border, right=thick)
+
+    # 3) Thin borders for all data rows (everything below the header block)
+    for r in range(second + 1, ws.max_row + 1):
+        for c in range(1, ws.max_column + 1):
+            cell = ws.cell(row=r, column=c)
+            if cell.value not in (None, ""):
+                cell.border = _merge_border(cell.border, top=thin, left=thin, right=thin, bottom=thin)
 
 
 
