@@ -1166,77 +1166,166 @@ def write_power_pole_issues_sheet(wb, issues: list[dict]):
 
 def write_conduit_sheet(wb, results: dict):
     """
-    Create a 'Conduit' worksheet with two blocks:
-      • Distribution Without Conduit
-      • Conduit Type Issues
-    `results` is the dict returned by run_all_conduit_checks().
+    Create a 'Conduit' worksheet with three side-by-side blocks:
+
+      • Distribution Without Conduit               (left)
+      • Conduits Without Distribution              (middle)
+      • Conduit Type Issues                        (right)
     """
     from openpyxl.styles import Alignment, Font
 
     ws = wb.create_sheet(title='Conduit')
     ws.freeze_panes = 'A3'
 
-    # Pull lists (use empty list if missing)
-    df_missing = results.get('df_missing_conduit', []) or []
-    type_issues = results.get('type_issues', []) or []
+    # Lists (default to [])
+    df_missing   = results.get('df_missing_conduit', []) or []
+    cd_missing   = results.get('conduit_missing_distribution', []) or []  # NEW
+    type_issues  = results.get('type_issues', []) or []
 
-    # Left block: Distributions without conduit
-    left_title = "Distribution Without Conduit"
+    # --- Left block: Distributions without conduit
+    left_title   = "Distribution Without Conduit"
     left_headers = ["Distribution ID", "Vetro ID", "Issue"]
-    left_rows = [
-        [str(row.get("Distribution ID","")), str(row.get("Vetro ID","")), str(row.get("Issue",""))]
+    left_rows    = [
+        [str(row.get("Distribution ID","")),
+         str(row.get("Vetro ID","")),
+         str(row.get("Issue",""))]
         for row in df_missing
     ]
 
-    # Right block: Conduit Type issues
-    right_title = "Conduit Type Issues"
+    # --- Middle block: Conduits without distribution (NEW)
+    mid_title    = "Conduits Without Distribution"
+    mid_headers  = ["Conduit ID", "Conduit Vetro ID", "Issue"]
+    mid_rows     = [
+        [str(row.get("Conduit ID","")),
+         str(row.get("Conduit Vetro ID","")),
+         str(row.get("Issue",""))]
+        for row in cd_missing
+    ]
+
+    # --- Right block: Conduit Type issues
+    right_title   = "Conduit Type Issues"
     right_headers = ["Conduit ID", "Conduit Vetro ID", "Conduit Type", "Issue"]
-    right_rows = [
-        [
-            str(row.get("Conduit ID","")),
-            str(row.get("Conduit Vetro ID","")),
-            str(row.get("Conduit Type","")),
-            str(row.get("Issue","")),
-        ]
+    right_rows    = [
+        [str(row.get("Conduit ID","")),
+         str(row.get("Conduit Vetro ID","")),
+         str(row.get("Conduit Type","")),
+         str(row.get("Issue",""))]
         for row in type_issues
     ]
 
-    DETAIL_ROW = 1
-    LEFT_COL_START = 1
-    RIGHT_COL_START = 6
+    # Side-by-side renderer
+    TITLE_ROW, HEADERS_ROW, DATA_ROW, GAP_COLS = 1, 2, 3, 1
+    blocks = [
+        (left_title,  left_headers,  left_rows),
+        (mid_title,   mid_headers,   mid_rows),
+        (right_title, right_headers, right_rows),
+    ]
 
-    # Draw Left block
-    ws.merge_cells(start_row=DETAIL_ROW, start_column=LEFT_COL_START,
-                   end_row=DETAIL_ROW, end_column=LEFT_COL_START + len(left_headers) - 1)
-    th = ws.cell(row=DETAIL_ROW, column=LEFT_COL_START, value=left_title)
-    th.font = Font(bold=True); th.alignment = Alignment(horizontal="center")
+    col_start = 1
+    for (title, headers, rows) in blocks:
+        # Title
+        ws.merge_cells(
+            start_row=TITLE_ROW, start_column=col_start,
+            end_row=TITLE_ROW,   end_column=col_start + len(headers) - 1
+        )
+        th = ws.cell(row=TITLE_ROW, column=col_start, value=title)
+        th.font = Font(bold=True)
+        th.alignment = Alignment(horizontal="center")
 
-    for i, h in enumerate(left_headers, start=LEFT_COL_START):
-        hc = ws.cell(row=DETAIL_ROW + 1, column=i, value=h)
-        hc.font = Font(bold=True); hc.alignment = Alignment(horizontal="center")
+        # Headers
+        for i, h in enumerate(headers, start=col_start):
+            hc = ws.cell(row=HEADERS_ROW, column=i, value=h)
+            hc.font = Font(bold=True)
+            hc.alignment = Alignment(horizontal="center")
 
-    r = DETAIL_ROW + 2
-    for row_vals in left_rows:
-        for i, val in enumerate(row_vals, start=LEFT_COL_START):
-            ws.cell(row=r, column=i, value=val)
-        r += 1
+        # Data rows
+        r = DATA_ROW
+        for row_vals in rows:
+            for i, val in enumerate(row_vals, start=col_start):
+                ws.cell(row=r, column=i, value=val)
+            r += 1
 
-    # Draw Right block
-    ws.merge_cells(start_row=DETAIL_ROW, start_column=RIGHT_COL_START,
-                   end_row=DETAIL_ROW, end_column=RIGHT_COL_START + len(right_headers) - 1)
-    th2 = ws.cell(row=DETAIL_ROW, column=RIGHT_COL_START, value=right_title)
-    th2.font = Font(bold=True); th2.alignment = Alignment(horizontal="center")
+        # Next block with a 1-column gutter
+        col_start += len(headers) + GAP_COLS
 
-    for i, h in enumerate(right_headers, start=RIGHT_COL_START):
-        hc = ws.cell(row=DETAIL_ROW + 1, column=i, value=h)
-        hc.font = Font(bold=True); hc.alignment = Alignment(horizontal="center")
-
-    r2 = DETAIL_ROW + 2
-    for row_vals in right_rows:
-        for i, val in enumerate(row_vals, start=RIGHT_COL_START):
-            ws.cell(row=r2, column=i, value=val)
-        r2 += 1
     apply_borders(ws)
+
+
+
+
+# def write_conduit_sheet(wb, results: dict):
+#     """
+#     Create a 'Conduit' worksheet with two blocks:
+#       • Distribution Without Conduit
+#       • Conduit Type Issues
+#     `results` is the dict returned by run_all_conduit_checks().
+#     """
+#     from openpyxl.styles import Alignment, Font
+
+#     ws = wb.create_sheet(title='Conduit')
+#     ws.freeze_panes = 'A3'
+
+#     # Pull lists (use empty list if missing)
+#     df_missing = results.get('df_missing_conduit', []) or []
+#     type_issues = results.get('type_issues', []) or []
+
+#     # Left block: Distributions without conduit
+#     left_title = "Distribution Without Conduit"
+#     left_headers = ["Distribution ID", "Vetro ID", "Issue"]
+#     left_rows = [
+#         [str(row.get("Distribution ID","")), str(row.get("Vetro ID","")), str(row.get("Issue",""))]
+#         for row in df_missing
+#     ]
+
+#     # Right block: Conduit Type issues
+#     right_title = "Conduit Type Issues"
+#     right_headers = ["Conduit ID", "Conduit Vetro ID", "Conduit Type", "Issue"]
+#     right_rows = [
+#         [
+#             str(row.get("Conduit ID","")),
+#             str(row.get("Conduit Vetro ID","")),
+#             str(row.get("Conduit Type","")),
+#             str(row.get("Issue","")),
+#         ]
+#         for row in type_issues
+#     ]
+
+#     DETAIL_ROW = 1
+#     LEFT_COL_START = 1
+#     RIGHT_COL_START = 6
+
+#     # Draw Left block
+#     ws.merge_cells(start_row=DETAIL_ROW, start_column=LEFT_COL_START,
+#                    end_row=DETAIL_ROW, end_column=LEFT_COL_START + len(left_headers) - 1)
+#     th = ws.cell(row=DETAIL_ROW, column=LEFT_COL_START, value=left_title)
+#     th.font = Font(bold=True); th.alignment = Alignment(horizontal="center")
+
+#     for i, h in enumerate(left_headers, start=LEFT_COL_START):
+#         hc = ws.cell(row=DETAIL_ROW + 1, column=i, value=h)
+#         hc.font = Font(bold=True); hc.alignment = Alignment(horizontal="center")
+
+#     r = DETAIL_ROW + 2
+#     for row_vals in left_rows:
+#         for i, val in enumerate(row_vals, start=LEFT_COL_START):
+#             ws.cell(row=r, column=i, value=val)
+#         r += 1
+
+#     # Draw Right block
+#     ws.merge_cells(start_row=DETAIL_ROW, start_column=RIGHT_COL_START,
+#                    end_row=DETAIL_ROW, end_column=RIGHT_COL_START + len(right_headers) - 1)
+#     th2 = ws.cell(row=DETAIL_ROW, column=RIGHT_COL_START, value=right_title)
+#     th2.font = Font(bold=True); th2.alignment = Alignment(horizontal="center")
+
+#     for i, h in enumerate(right_headers, start=RIGHT_COL_START):
+#         hc = ws.cell(row=DETAIL_ROW + 1, column=i, value=h)
+#         hc.font = Font(bold=True); hc.alignment = Alignment(horizontal="center")
+
+#     r2 = DETAIL_ROW + 2
+#     for row_vals in right_rows:
+#         for i, val in enumerate(row_vals, start=RIGHT_COL_START):
+#             ws.cell(row=r2, column=i, value=val)
+#         r2 += 1
+#     apply_borders(ws)
 
 def write_vaults_sheet(wb, results: dict):
     """

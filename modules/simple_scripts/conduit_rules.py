@@ -110,6 +110,40 @@ def _collect_conduit_vertices(conduits: List[dict]) -> List[Tuple[float,float]]:
             verts.extend(seg)
     return verts
 
+def find_conduits_without_distribution() -> List[dict]:
+    """
+    For each conduit (any type), require at least one underground Distribution vertex
+    within THRESHOLD_M of any conduit vertex. If none, flag the conduit.
+
+    Returns rows:
+      { "Conduit ID": , "Conduit Vetro ID": , "Issue": "No Distribution fiber on conduit" }
+    """
+    conduits = _load_conduits()
+    # Collect all underground distribution vertices once
+    ug_dists = _load_underground_distributions_full()
+    dist_vertices: List[Tuple[float, float]] = []
+    for df in ug_dists:
+        for seg in df.get("segments", []):
+            dist_vertices.extend(seg)
+
+    out: List[dict] = []
+    for c in conduits:
+        has_touch = False
+        for seg in c.get("segments", []):
+            for lat, lon in seg:
+                if any(haversine(lat, lon, dlat, dlon) <= THRESHOLD_M for (dlat, dlon) in dist_vertices):
+                    has_touch = True
+                    break
+            if has_touch:
+                break
+        if not has_touch:
+            out.append({
+                "Conduit ID": c.get("id", ""),
+                "Conduit Vetro ID": c.get("vetro_id", ""),
+                "Issue": "No Distribution fiber on conduit",
+            })
+    return out
+
 
 # ---------------------------------------------
 # Rule: Underground DF must have conduit below
@@ -163,11 +197,59 @@ def find_conduit_type_issues() -> List[dict]:
     return out
 
 
+def find_conduits_without_distribution() -> List[dict]:
+    """
+    For each conduit (any type), require at least one *underground* Distribution
+    vertex within THRESHOLD_M of any conduit vertex. If none, flag the conduit.
+
+    Returns rows:
+      {
+        "Conduit ID": ,
+        "Conduit Vetro ID": ,
+        "Issue": "No Distribution fiber on conduit"
+      }
+    """
+    conduits = _load_conduits()
+
+    # Collect all UNDERGROUND distribution vertices once
+    ug_dists = _load_underground_distributions_full()
+    dist_vertices: List[Tuple[float, float]] = []
+    for df in ug_dists:
+        for seg in df.get("segments", []):
+            dist_vertices.extend(seg)
+
+    out: List[dict] = []
+    for c in conduits:
+        has_touch = False
+        for seg in c.get("segments", []):
+            for lat, lon in seg:
+                # touch if any UG dist vertex is within tolerance
+                if any(haversine(lat, lon, dlat, dlon) <= THRESHOLD_M for (dlat, dlon) in dist_vertices):
+                    has_touch = True
+                    break
+            if has_touch:
+                break
+
+        if not has_touch:
+            out.append({
+                "Conduit ID": c.get("id", ""),
+                "Conduit Vetro ID": c.get("vetro_id", ""),
+                "Issue": "No Distribution fiber on conduit",
+            })
+    return out
+
+
 def run_all_conduit_checks() -> dict[str, List[dict]]:
     return {
+        # Underground Distribution without any nearby conduit
         "df_missing_conduit": find_distributions_without_conduit(),
-        "type_issues":        find_conduit_type_issues(),
+        # Conduits that don’t carry any underground distribution (NEW)
+        "conduit_missing_distribution": find_conduits_without_distribution(),
+        # Bad / blank conduit types
+        "type_issues": find_conduit_type_issues(),
     }
+
+
 
 def find_vaults_missing_conduit(tolerance_ft: float | None = None) -> List[dict]:
     """
