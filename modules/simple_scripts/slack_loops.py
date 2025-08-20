@@ -75,34 +75,38 @@ def find_slack_dist_mismatches():
 
 # modules/simple_scripts/slack_loops.py
 
+# modules/simple_scripts/slack_loops.py
+
 def _load_slack_loops_with_labels_and_coords():
     """
     Return list of (lat, lon, slack_vid, fiber_label, slack_loop_label).
 
-    NOTE: Do NOT require 'Fiber Label' to exist; Tail-End logic only needs
-    the Slack Loop label and the feature's vetro_id.
+    IMPORTANT: Do NOT require 'Fiber Label' to exist.
+    Tail-End logic only needs the Slack Loop's vetro_id + 'Slack Loop' text + coords.
     """
     out = []
     for fn in glob.glob(f'{modules.config.DATA_DIR}/*slack-loop*.geojson'):
         with open(fn, encoding='utf-8') as f:
             gj = json.load(f)
+
         for feat in gj.get('features', []):
-            props = feat.get('properties', {}) or {}
+            props = (feat.get('properties') or {})
             slack_vid = props.get('vetro_id')
-            geom = feat.get('geometry', {}) or {}
-            coords = geom.get('coordinates', []) or []
-
-            # Keep if it has an ID and valid coords; don't require Fiber Label.
-            if not slack_vid or len(coords) < 2:
-                continue
-
-            # Normalize to strings (empty when missing) for downstream use.
+            # Accept missing/blank Fiber Label; normalize to empty string
             fl = (props.get('Fiber Label') or '').strip()
             sl = (props.get('Slack Loop') or '').strip()
+
+            geom = (feat.get('geometry') or {})
+            coords = (geom.get('coordinates') or [])
+
+            # Only require an ID and usable [lon, lat] coords
+            if not slack_vid or len(coords) < 2:
+                continue
 
             lon, lat = coords[0], coords[1]
             out.append((lat, lon, slack_vid, fl, sl))
     return out
+
 
 
 # def _load_slack_loops_with_labels_and_coords():
