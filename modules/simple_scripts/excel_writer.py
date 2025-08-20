@@ -97,17 +97,21 @@ def write_network_statistics(wb, stats):
     """
     Inserts a ‘PON Statistics’ sheet at the front (index=0) and writes:
       • Left block (A:B): key network metrics + issue counts
-      • Right block (D:E): "PON Layers Missing/Present" with existence checks
+        - Metrics (NAPs..Vaults) alphabetized
+        - 'T3 Vault' stays fixed after the metrics
+        - Issue rows (Fiber-Drop Issues..NAP Issues) alphabetized
+      • Right block (D:E): "PON Layers Missing/Present" with existence checks (alphabetized)
+
     Formatting:
       • Row 1 merged A1:B1 title "Misc Network Info"
       • Row 2 column headers "Metric", "Value"
       • Value column (B) centered
-      • Issue rows bolded when count > 0 (rows after 'T3 Vault')
-      • Borders applied by apply_borders(ws) (thick header outline, thin grid)
+      • Issue rows bolded when count > 0
+      • Borders applied by apply_borders(ws)
     """
     from openpyxl.styles import Alignment, Font, PatternFill
     import glob
-    import modules.config  # required to reference modules.config.DATA_DIR as instructed
+    import modules.config  # required: use modules.config.DATA_DIR
 
     # 1) Create the sheet at index 0
     ws = wb.create_sheet(title='PON Statistics', index=0)
@@ -126,76 +130,101 @@ def write_network_statistics(wb, stats):
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal='center')
 
-    # 4) Left block (A:B): metrics + issues
-    # Robust pulls with defaults; keep naming fallbacks for NAP issue key(s)
-    nap_issue_mismatch = stats.get('nap_mismatch_issues', stats.get('nap_mismatches', 0))
+    # ---------- Left block (A:B) ----------
+    # Metrics (alphabetize NAPs..Vaults)
+    metrics_base = {
+        'NAPs': stats.get('nap_count', 0),
+        'Service Locations': stats.get('service_location_count', 0),
+        'NIDs': stats.get('nid_count', 0),
+        'Power Poles': stats.get('power_pole_count', 0),
+        'Vaults': stats.get('vault_count_excluding_t3', 0),
+    }
+    metrics_sorted = sorted(metrics_base.items(), key=lambda kv: kv[0].lower())
 
-    # Safely join T3 names
+    # T3 Vault (stays right after the metrics)
     t3_names = stats.get('t3_names', [])
     if isinstance(t3_names, (list, tuple)):
         t3_joined = ', '.join(t3_names)
     else:
         t3_joined = str(t3_names) if t3_names is not None else ''
 
-    rows = [
-        ('NAPs',                         stats.get('nap_count', 0)),
-        ('Service Locations',            stats.get('service_location_count', 0)),
-        ('NIDs',                         stats.get('nid_count', 0)),
-        ('Power Poles',                  stats.get('power_pole_count', 0)),
-        ('Vaults',                       stats.get('vault_count_excluding_t3', 0)),
-        ('T3 Vault',                     t3_joined),
-        ('Fiber-Drop Issues',            stats.get('fiber_drop_issues', 0)),
-        ('Slack Loop Issues',            stats.get('slack_dist_issues', 0)
-                                          + stats.get('underground_slack_issues', 0)
-                                          + stats.get('aerial_slack_issues', 0)
-                                          + stats.get('tail_end_slack_issues', 0)),
-        ('Footage Issues',               stats.get('footage_issues', 0)),
-        ('NID Drop Issues',              stats.get('nid_drop_issues', 0)),
-        ('Power Pole Issues',            stats.get('power_pole_issues', 0)),
-        ('Conduit Issues',               stats.get('conduit_issues', 0)),
-        ('Vault Issues',                 stats.get('vault_issues', 0)),
-        ('SL Attributes Issues',         stats.get('svc_attr_issues', 0)),
-        ('Dist/NAP Walker Issues',       stats.get('dist_nap_walker_issues', 0)),
-        ('NAP Issues',                   nap_issue_mismatch
-                                          + stats.get('nap_naming_issues', 0)
-                                          + stats.get('nap_spec_warnings', 0)),
-    ]
+    # Issues (alphabetize Fiber-Drop Issues..NAP Issues)
+    nap_issue_mismatch = stats.get('nap_mismatch_issues', stats.get('nap_mismatches', 0))
+    nap_issues_total = nap_issue_mismatch + stats.get('nap_naming_issues', 0) + stats.get('nap_spec_warnings', 0)
+    slack_issues_total = (
+        stats.get('slack_dist_issues', 0)
+        + stats.get('underground_slack_issues', 0)
+        + stats.get('aerial_slack_issues', 0)
+        + stats.get('tail_end_slack_issues', 0)
+    )
+    issues_base = {
+        'Conduit Issues': stats.get('conduit_issues', 0),
+        'Dist/NAP Walker Issues': stats.get('dist_nap_walker_issues', 0),
+        'Fiber-Drop Issues': stats.get('fiber_drop_issues', 0),
+        'Footage Issues': stats.get('footage_issues', 0),
+        'NID Drop Issues': stats.get('nid_drop_issues', 0),
+        'NAP Issues': nap_issues_total,
+        'Power Pole Issues': stats.get('power_pole_issues', 0),
+        'SL Attributes Issues': stats.get('svc_attr_issues', 0),
+        'Slack Loop Issues': slack_issues_total,
+        'Vault Issues': stats.get('vault_issues', 0),
+    }
+    issues_sorted = sorted(issues_base.items(), key=lambda kv: kv[0].lower())
 
+    # Write rows
     start_row = 3
-    for idx, (label, val) in enumerate(rows, start=start_row):
-        cell_label = ws.cell(row=idx, column=1, value=label)
-        cell_value = ws.cell(row=idx, column=2, value=val)
-        # Bold any *issue* row when its count > 0 (rows after 'T3 Vault')
-        if isinstance(val, int) and val > 0 and idx >= (start_row + 6):  # row after T3 Vault
+    r = start_row
+
+    # Metrics (alphabetized)
+    for label, val in metrics_sorted:
+        ws.cell(row=r, column=1, value=label)
+        ws.cell(row=r, column=2, value=val)
+        r += 1
+
+    # T3 Vault (fixed position)
+    ws.cell(row=r, column=1, value='T3 Vault')
+    ws.cell(row=r, column=2, value=t3_joined)
+    r += 1
+
+    issue_start_idx = r  # first issue row index
+
+    # Issues (alphabetized)
+    for label, val in issues_sorted:
+        cell_label = ws.cell(row=r, column=1, value=label)
+        cell_value = ws.cell(row=r, column=2, value=val)
+
+        # Bold any issue row when count > 0
+        if isinstance(val, int) and val > 0:
             cell_label.font = Font(bold=True)
             cell_value.font = Font(bold=True)
+        r += 1
 
     # Center-align the Value column
     for row in ws.iter_rows(min_row=1, min_col=2, max_col=2, max_row=ws.max_row):
         for cell in row:
             cell.alignment = Alignment(horizontal='center')
 
-    # 5) Right block (D:E): PON Layers Missing/Present
+    # ---------- Right block (D:E) ----------
     ws.cell(row=1, column=4, value='PON Layers Missing/Present').font = Font(bold=True)
     ws.cell(row=1, column=5, value='Status').font = Font(bold=True)
 
     patterns = [
-        ('NAPs',                     f"{modules.config.DATA_DIR}/*nap*.geojson"),
-        ('Service Locations',        f"{modules.config.DATA_DIR}/*service-location*.geojson"),
-        ('Distribution Aerial',      f"{modules.config.DATA_DIR}/*fiber-distribution-aerial*.geojson"),
+        ('Conduit', f"{modules.config.DATA_DIR}/*conduit*.geojson"),
+        ('Distribution Aerial', f"{modules.config.DATA_DIR}/*fiber-distribution-aerial*.geojson"),
         ('Distribution Underground', f"{modules.config.DATA_DIR}/*fiber-distribution-underground*.geojson"),
-        ('Slack-Loops',              f"{modules.config.DATA_DIR}/*slack-loop*.geojson"),
-        ('Vaults',                   f"{modules.config.DATA_DIR}/*vault*.geojson"),
-        ('Fiber-Drops',              f"{modules.config.DATA_DIR}/*fiber-drop*.geojson"),
-        ('NIDs',                     f"{modules.config.DATA_DIR}/*ni-ds*.geojson"),
+        ('Fiber-Drops', f"{modules.config.DATA_DIR}/*fiber-drop*.geojson"),
+        ('NIDs', f"{modules.config.DATA_DIR}/*ni-ds*.geojson"),
+        ('NAPs', f"{modules.config.DATA_DIR}/*nap*.geojson"),
+        ('Power Poles', f"{modules.config.DATA_DIR}/*power-pole*.geojson"),
+        ('Service Locations', f"{modules.config.DATA_DIR}/*service-location*.geojson"),
+        ('Slack-Loops', f"{modules.config.DATA_DIR}/*slack-loop*.geojson"),
+        ('Vaults', f"{modules.config.DATA_DIR}/*vault*.geojson"),
     ]
 
-    for ridx, (desc, patt) in enumerate(patterns, start=3):
+    for ridx, (desc, patt) in enumerate(sorted(patterns, key=lambda x: natural_key(x[0])), start=3):
         desc_cell = ws.cell(row=ridx, column=4, value=desc)
-
         exists = bool(glob.glob(patt))
         symbol = '☑' if exists else '☐'
-
         status_cell = ws.cell(row=ridx, column=5, value=symbol)
         status_cell.alignment = Alignment(horizontal='center')
 
@@ -209,9 +238,136 @@ def write_network_statistics(wb, stats):
         if not exists:
             desc_cell.font = Font(bold=True)
 
-    # 6) Autosize columns and apply borders
+    # ---------- Finalize ----------
     auto_size(wb)
     apply_borders(ws)
+
+
+# def write_network_statistics(wb, stats):
+#     """
+#     Inserts a ‘PON Statistics’ sheet at the front (index=0) and writes:
+#       • Left block (A:B): key network metrics + issue counts
+#       • Right block (D:E): "PON Layers Missing/Present" with existence checks
+
+#     Formatting:
+#       • Row 1 merged A1:B1 title "Misc Network Info"
+#       • Row 2 column headers "Metric", "Value"
+#       • Value column (B) centered
+#       • Issue rows bolded when count > 0 (rows after 'T3 Vault')
+#       • Borders applied by apply_borders(ws) (thick header outline, thin grid)
+#     """
+#     from openpyxl.styles import Alignment, Font, PatternFill
+#     import glob
+#     import modules.config  # required to reference modules.config.DATA_DIR as instructed
+
+#     # 1) Create the sheet at index 0
+#     ws = wb.create_sheet(title='PON Statistics', index=0)
+#     ws.freeze_panes = 'A3'  # freeze title + column header rows
+
+#     # 2) Big merged title in row 1 (A1:B1)
+#     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=2)
+#     header = ws.cell(row=1, column=1, value='Misc Network Info')
+#     header.alignment = Alignment(horizontal='center')
+#     header.font = Font(bold=True)
+
+#     # 3) Column titles on row 2 (bold + centered)
+#     cols = ['Metric', 'Value']
+#     for col_idx, title in enumerate(cols, start=1):
+#         cell = ws.cell(row=2, column=col_idx, value=title)
+#         cell.font = Font(bold=True)
+#         cell.alignment = Alignment(horizontal='center')
+
+#     # 4) Left block (A:B): metrics + issues
+#     # Robust pulls with defaults; keep naming fallbacks for NAP issue key(s)
+#     nap_issue_mismatch = stats.get('nap_mismatch_issues', stats.get('nap_mismatches', 0))
+
+#     # Safely join T3 names
+#     t3_names = stats.get('t3_names', [])
+#     if isinstance(t3_names, (list, tuple)):
+#         t3_joined = ', '.join(t3_names)
+#     else:
+#         t3_joined = str(t3_names) if t3_names is not None else ''
+
+#     rows = [
+#         ('NAPs', stats.get('nap_count', 0)),
+#         ('Service Locations', stats.get('service_location_count', 0)),
+#         ('NIDs', stats.get('nid_count', 0)),
+#         ('Power Poles', stats.get('power_pole_count', 0)),
+#         ('Vaults', stats.get('vault_count_excluding_t3', 0)),
+#         ('T3 Vault', t3_joined),
+
+#         ('Fiber-Drop Issues', stats.get('fiber_drop_issues', 0)),
+#         ('Slack Loop Issues',
+#          stats.get('slack_dist_issues', 0)
+#          + stats.get('underground_slack_issues', 0)
+#          + stats.get('aerial_slack_issues', 0)
+#          + stats.get('tail_end_slack_issues', 0)),
+#         ('Footage Issues', stats.get('footage_issues', 0)),
+#         ('NID Drop Issues', stats.get('nid_drop_issues', 0)),
+#         ('Power Pole Issues', stats.get('power_pole_issues', 0)),
+#         ('Conduit Issues', stats.get('conduit_issues', 0)),
+#         ('Vault Issues', stats.get('vault_issues', 0)),
+#         ('SL Attributes Issues', stats.get('svc_attr_issues', 0)),
+#         ('Dist/NAP Walker Issues', stats.get('dist_nap_walker_issues', 0)),
+#         ('NAP Issues', nap_issue_mismatch
+#          + stats.get('nap_naming_issues', 0)
+#          + stats.get('nap_spec_warnings', 0)),
+#     ]
+
+#     start_row = 3
+#     for idx, (label, val) in enumerate(rows, start=start_row):
+#         cell_label = ws.cell(row=idx, column=1, value=label)
+#         cell_value = ws.cell(row=idx, column=2, value=val)
+
+#         # Bold any *issue* row when its count > 0 (rows after 'T3 Vault')
+#         if isinstance(val, int) and val > 0 and idx >= (start_row + 6):  # row after T3 Vault
+#             cell_label.font = Font(bold=True)
+#             cell_value.font = Font(bold=True)
+
+#     # Center-align the Value column
+#     for row in ws.iter_rows(min_row=1, min_col=2, max_col=2, max_row=ws.max_row):
+#         for cell in row:
+#             cell.alignment = Alignment(horizontal='center')
+
+#     # 5) Right block (D:E): PON Layers Missing/Present
+#     ws.cell(row=1, column=4, value='PON Layers Missing/Present').font = Font(bold=True)
+#     ws.cell(row=1, column=5, value='Status').font = Font(bold=True)
+
+#     patterns = [
+#         ('Conduit', f"{modules.config.DATA_DIR}/*conduit*.geojson"),
+#         ('Distribution Aerial', f"{modules.config.DATA_DIR}/*fiber-distribution-aerial*.geojson"),
+#         ('Distribution Underground', f"{modules.config.DATA_DIR}/*fiber-distribution-underground*.geojson"),
+#         ('Fiber-Drops', f"{modules.config.DATA_DIR}/*fiber-drop*.geojson"),
+#         ('NIDs', f"{modules.config.DATA_DIR}/*ni-ds*.geojson"),
+#         ('NAPs', f"{modules.config.DATA_DIR}/*nap*.geojson"),
+#         ('Power Poles', f"{modules.config.DATA_DIR}/*power-pole*.geojson"),
+#         ('Service Locations', f"{modules.config.DATA_DIR}/*service-location*.geojson"),
+#         ('Slack-Loops', f"{modules.config.DATA_DIR}/*slack-loop*.geojson"),
+#         ('Vaults', f"{modules.config.DATA_DIR}/*vault*.geojson"),
+#     ]
+
+#     # Alphabetize the right-hand block by the label shown in column D
+#     for ridx, (desc, patt) in enumerate(sorted(patterns, key=lambda x: natural_key(x[0])), start=3):
+#         desc_cell = ws.cell(row=ridx, column=4, value=desc)
+#         exists = bool(glob.glob(patt))
+#         symbol = '☑' if exists else '☐'
+#         status_cell = ws.cell(row=ridx, column=5, value=symbol)
+#         status_cell.alignment = Alignment(horizontal='center')
+
+#         # Green for present, red for missing
+#         font_color = '008000' if exists else 'FF0000'
+#         bg_color = 'C6EFCE' if exists else 'FFC7CE'
+#         status_cell.font = Font(color=font_color)
+#         status_cell.fill = PatternFill(fill_type='solid', start_color=bg_color)
+
+#         # Emphasize missing line
+#         if not exists:
+#             desc_cell.font = Font(bold=True)
+
+#     # 6) Autosize columns and apply borders
+#     auto_size(wb)
+#     apply_borders(ws)
+
 
 def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
     """
