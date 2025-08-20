@@ -264,13 +264,20 @@ class PeerCheckGUI(tk.Tk):
         self._create_widgets()
 
     # NOTE: this replaces your previous _create_widgets (full method provided)
+
     def _create_widgets(self):
         pad = {"padx": 12, "pady": 8}
+
+        # Determine last Output first (from local bootstrap), then set prefs base
+        last_out = modules.config.get_bootstrap_last_output_dir(default=os.path.abspath(os.getcwd()))
+        modules.config.set_prefs_base_dir(last_out)
 
         # --- Data Folder ---
         row = 0
         ttk.Label(self, text="Data Folder").grid(row=row, column=0, sticky="w", **pad)
-        self.data_dir_var = tk.StringVar(value=str(getattr(modules.config, "DATA_DIR", "")))
+        # Prefill Data from prefs stored in <Output>/user_prefs.json; fallback to modules.config.DATA_DIR
+        last_data = modules.config.get_last_dir("data", default=str(getattr(modules.config, "DATA_DIR", "")))
+        self.data_dir_var = tk.StringVar(value=last_data)
         self.data_dir_entry = ttk.Entry(self, textvariable=self.data_dir_var, width=70)
         self.data_dir_entry.grid(row=row, column=1, sticky="w", **pad)
         ttk.Button(self, text="Browse…", command=self._browse_data_dir).grid(row=row, column=2, **pad)
@@ -278,47 +285,45 @@ class PeerCheckGUI(tk.Tk):
         # --- Output Folder ---
         row += 1
         ttk.Label(self, text="Output Folder:").grid(row=row, column=0, sticky="w", **pad)
-        self.out_dir_var = tk.StringVar(value=os.path.abspath(os.getcwd()))
+        self.out_dir_var = tk.StringVar(value=last_out)
         self.out_dir_entry = ttk.Entry(self, textvariable=self.out_dir_var, width=70)
         self.out_dir_entry.grid(row=row, column=1, sticky="w", **pad)
         ttk.Button(self, text="Browse…", command=self._browse_out_dir).grid(row=row, column=2, **pad)
 
-        # --- Bottom row: Settings (left), Instructions (center), ( ? ) + Logs (right), Run (far-right) ---
+        # --- Buttons, Help, Logs, Run ---
         row += 1
         btn_frame = ttk.Frame(self)
         btn_frame.grid(row=row, column=0, columnspan=3, sticky="ew", **pad)
-
-        # Columns: 0=left, 1=center (expands), 2=near-right group (?(?) + Logs), 3=far-right (Run)
         btn_frame.columnconfigure(1, weight=1)
 
-        # Styles for bold Instructions and small help tag
         style = ttk.Style(self)
         style.configure("Bold.TButton", font=("", 10, "bold"))
-        style.configure("Help.TLabel", foreground="#666")  # tweak to taste
+        style.configure("Help.TLabel", foreground="#666")
 
-        # Left: Settings
         self.settings_btn = ttk.Button(btn_frame, text="Settings…", command=self._open_settings)
         self.settings_btn.grid(row=0, column=0, sticky="w")
 
-        # Center: Instructions (bold, centered)
         self.instructions_btn = ttk.Button(btn_frame, text="Instructions", style="Bold.TButton", command=self._open_instructions)
         self.instructions_btn.grid(row=0, column=1)
 
-        # Right group: ( ? ) + Logs checkbox (the ? lives immediately to the LEFT of Logs)
         right_group = ttk.Frame(btn_frame)
         right_group.grid(row=0, column=2, sticky="e")
-        # tiny help marker
         self.logs_help = ttk.Label(right_group, text="(?)", style="Help.TLabel", cursor="question_arrow")
         self.logs_help.grid(row=0, column=0, sticky="e", padx=(0, 6))
-        # the actual Logs checkbox
         self.include_logs_var = tk.BooleanVar(value=bool(getattr(modules.config, "WRITE_LOG_FILE", True)))
         self.logs_ck = ttk.Checkbutton(right_group, text="Logs", variable=self.include_logs_var)
         self.logs_ck.grid(row=0, column=1, sticky="e")
 
-        # Tooltip skeleton (you add the real text later)
-        HoverTooltip(self.logs_help, text="When checked, a separate log file is created. This log shows the exact path of each error found in the Excel document, as well as how the script aggregates the data—useful for verifying that it’s working correctly. You can customize what details appear in the logs by adjusting the settings.", wraplength_px=360)
+        HoverTooltip(
+            self.logs_help,
+            text=(
+                "When checked, a separate log file is created. This log shows the exact path of each error "
+                "found in the Excel document, as well as how the script aggregates the data—useful for verifying "
+                "that it’s working correctly. You can customize what details appear in the logs by adjusting the settings."
+            ),
+            wraplength_px=360
+        )
 
-        # Far-right: Run
         self.run_btn = ttk.Button(btn_frame, text="Run Checks", command=self._run)
         self.run_btn.grid(row=0, column=3, sticky="e")
 
@@ -328,18 +333,108 @@ class PeerCheckGUI(tk.Tk):
         ttk.Label(self, textvariable=self.status_var).grid(row=row, column=0, columnspan=3, sticky="w", **pad)
 
 
+    # def _create_widgets(self):
+    #     pad = {"padx": 12, "pady": 8}
 
+    #     # --- Data Folder ---
+    #     row = 0
+    #     ttk.Label(self, text="Data Folder").grid(row=row, column=0, sticky="w", **pad)
+    #     # Prefill from saved "data" dir, fallback to current modules.config.DATA_DIR
+    #     last_data = modules.config.get_last_dir("data", default=str(getattr(modules.config, "DATA_DIR", "")))
+    #     self.data_dir_var = tk.StringVar(value=last_data)
+    #     self.data_dir_entry = ttk.Entry(self, textvariable=self.data_dir_var, width=70)
+    #     self.data_dir_entry.grid(row=row, column=1, sticky="w", **pad)
+    #     ttk.Button(self, text="Browse…", command=self._browse_data_dir).grid(row=row, column=2, **pad)
+
+    #     # --- Output Folder ---
+    #     row += 1
+    #     ttk.Label(self, text="Output Folder:").grid(row=row, column=0, sticky="w", **pad)
+    #     # Prefill from saved "output" dir, fallback to CWD
+    #     last_out = modules.config.get_last_dir("output", default=os.path.abspath(os.getcwd()))
+    #     self.out_dir_var = tk.StringVar(value=last_out)
+    #     self.out_dir_entry = ttk.Entry(self, textvariable=self.out_dir_var, width=70)
+    #     self.out_dir_entry.grid(row=row, column=1, sticky="w", **pad)
+    #     ttk.Button(self, text="Browse…", command=self._browse_out_dir).grid(row=row, column=2, **pad)
+
+    #     # --- Bottom row: Settings (left), Instructions (center), (?)+Logs (right), Run (far-right) ---
+    #     row += 1
+    #     btn_frame = ttk.Frame(self)
+    #     btn_frame.grid(row=row, column=0, columnspan=3, sticky="ew", **pad)
+
+    #     btn_frame.columnconfigure(1, weight=1)
+
+    #     style = ttk.Style(self)
+    #     style.configure("Bold.TButton", font=("", 10, "bold"))
+    #     style.configure("Help.TLabel", foreground="#666")
+
+    #     # Left: Settings
+    #     self.settings_btn = ttk.Button(btn_frame, text="Settings…", command=self._open_settings)
+    #     self.settings_btn.grid(row=0, column=0, sticky="w")
+
+    #     # Center: Instructions
+    #     self.instructions_btn = ttk.Button(btn_frame, text="Instructions", style="Bold.TButton", command=self._open_instructions)
+    #     self.instructions_btn.grid(row=0, column=1)
+
+    #     # Right: ( ? ) + Logs
+    #     right_group = ttk.Frame(btn_frame)
+    #     right_group.grid(row=0, column=2, sticky="e")
+    #     self.logs_help = ttk.Label(right_group, text="(?)", style="Help.TLabel", cursor="question_arrow")
+    #     self.logs_help.grid(row=0, column=0, sticky="e", padx=(0, 6))
+    #     self.include_logs_var = tk.BooleanVar(value=bool(getattr(modules.config, "WRITE_LOG_FILE", True)))
+    #     self.logs_ck = ttk.Checkbutton(right_group, text="Logs", variable=self.include_logs_var)
+    #     self.logs_ck.grid(row=0, column=1, sticky="e")
+
+    #     HoverTooltip(
+    #         self.logs_help,
+    #         text=(
+    #             "When checked, a separate log file is created. This log shows the exact path of each error "
+    #             "found in the Excel document, as well as how the script aggregates the data—useful for verifying "
+    #             "that it’s working correctly. You can customize what details appear in the logs by adjusting the settings."
+    #         ),
+    #         wraplength_px=360
+    #     )
+
+    #     # Far-right: Run
+    #     self.run_btn = ttk.Button(btn_frame, text="Run Checks", command=self._run)
+    #     self.run_btn.grid(row=0, column=3, sticky="e")
+
+    #     # Status line
+    #     row += 1
+    #     self.status_var = tk.StringVar(value="Ready.")
+    #     ttk.Label(self, textvariable=self.status_var).grid(row=row, column=0, columnspan=3, sticky="w", **pad)
 
     # --- callbacks ---
-    def _browse_data_dir(self):
-        path = filedialog.askdirectory(title="Select Data Folder", mustexist=True)
-        if path:
-            self.data_dir_var.set(path)
-
     def _browse_out_dir(self):
-        path = filedialog.askdirectory(title="Select Output Folder", mustexist=True)
+        start = modules.config.get_bootstrap_last_output_dir(
+            default=os.path.abspath(os.getcwd())
+        )
+        path = filedialog.askdirectory(
+            title="Select Output Folder",
+            mustexist=True,
+            initialdir=start
+        )
         if path:
             self.out_dir_var.set(path)
+            # Point prefs at the new Output folder and remember it for next launch
+            modules.config.set_prefs_base_dir(path)
+            modules.config.set_bootstrap_last_output_dir(path)
+            # Also store this choice inside <Output>/user_prefs.json
+            modules.config.update_last_dir("output", path)
+
+
+    def _browse_data_dir(self):
+        start = modules.config.get_last_dir(
+            "data",
+            default=str(getattr(modules.config, "DATA_DIR", ""))
+        )
+        path = filedialog.askdirectory(
+            title="Select Data Folder",
+            mustexist=True,
+            initialdir=start
+        )
+        if path:
+            self.data_dir_var.set(path)
+            modules.config.update_last_dir("data", path)
 
     def _open_settings(self):
         SettingsDialog(self)
@@ -348,7 +443,6 @@ class PeerCheckGUI(tk.Tk):
         InstructionsDialog(self)
 
     def _run(self):
-        # Update modules.config.DATA_DIR before running
         data_dir = os.path.abspath(self.data_dir_var.get().strip())
         out_dir  = os.path.abspath(self.out_dir_var.get().strip())
 
@@ -359,21 +453,27 @@ class PeerCheckGUI(tk.Tk):
             messagebox.showerror("Error", "Please select a valid Output Folder.")
             return
 
-        # Critical: always reference modules.config.DATA_DIR for the project
+        # Point prefs to this Output, persist bootstrap pointer, and save both dirs
+        modules.config.set_prefs_base_dir(out_dir)
+        modules.config.set_bootstrap_last_output_dir(out_dir)
+        modules.config.update_last_dir("output", out_dir)
+        modules.config.update_last_dir("data", data_dir)
+
+        # Always reference modules.config.DATA_DIR for network data
         modules.config.DATA_DIR = data_dir
 
-        # Run — let main() set up the timestamped Excel + matching log name
         try:
             self.status_var.set("Running…")
             self.update_idletasks()
             modules.config.WRITE_LOG_FILE = bool(self.include_logs_var.get())
-            run_main(data_dir, out_dir)  # call your existing main.main(data_dir, out_dir)
+            run_main(data_dir, out_dir)
             self.status_var.set("Done.")
             messagebox.showinfo("Success", f"Checks complete!\nSaved to {out_dir}")
         except Exception as e:
             self.status_var.set("Error.")
             traceback.print_exc()
             messagebox.showerror("Error", f"Script failed:\n{e}")
+
 
 if __name__ == "__main__":
     app = PeerCheckGUI()
