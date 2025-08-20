@@ -53,7 +53,7 @@ from modules.simple_scripts.excel_writer import (
     write_geojson_summary,
     write_network_statistics,
     write_person_sheets,
-    write_fiber_drop_sheet,
+    write_drop_issues_sheet,
     write_slack_loop_issues_sheet,
     write_footage_issues_sheet,
     write_nid_issues,
@@ -303,7 +303,7 @@ def main(data_dir=None, gui_out_path=None):
         missing    = find_missing_service_location_drops(service_coords, drop_coords)
         combined   = sort_service_location_ids_like_attributes(list(set(mismatches) | set(missing)))
         if modules.config.SHOW_ALL_SHEETS or combined:
-            write_fiber_drop_sheet(wb, service_coords, drop_coords, combined)
+            write_drop_issues_sheet(wb, service_coords, drop_coords, combined)
 
         # Footage Issues (Distribution Note + Fiber Cable > 250 ft)
         footage_issues = find_missing_distribution_footage()

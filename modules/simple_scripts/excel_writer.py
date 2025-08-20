@@ -243,132 +243,6 @@ def write_network_statistics(wb, stats):
     apply_borders(ws)
 
 
-# def write_network_statistics(wb, stats):
-#     """
-#     Inserts a ‘PON Statistics’ sheet at the front (index=0) and writes:
-#       • Left block (A:B): key network metrics + issue counts
-#       • Right block (D:E): "PON Layers Missing/Present" with existence checks
-
-#     Formatting:
-#       • Row 1 merged A1:B1 title "Misc Network Info"
-#       • Row 2 column headers "Metric", "Value"
-#       • Value column (B) centered
-#       • Issue rows bolded when count > 0 (rows after 'T3 Vault')
-#       • Borders applied by apply_borders(ws) (thick header outline, thin grid)
-#     """
-#     from openpyxl.styles import Alignment, Font, PatternFill
-#     import glob
-#     import modules.config  # required to reference modules.config.DATA_DIR as instructed
-
-#     # 1) Create the sheet at index 0
-#     ws = wb.create_sheet(title='PON Statistics', index=0)
-#     ws.freeze_panes = 'A3'  # freeze title + column header rows
-
-#     # 2) Big merged title in row 1 (A1:B1)
-#     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=2)
-#     header = ws.cell(row=1, column=1, value='Misc Network Info')
-#     header.alignment = Alignment(horizontal='center')
-#     header.font = Font(bold=True)
-
-#     # 3) Column titles on row 2 (bold + centered)
-#     cols = ['Metric', 'Value']
-#     for col_idx, title in enumerate(cols, start=1):
-#         cell = ws.cell(row=2, column=col_idx, value=title)
-#         cell.font = Font(bold=True)
-#         cell.alignment = Alignment(horizontal='center')
-
-#     # 4) Left block (A:B): metrics + issues
-#     # Robust pulls with defaults; keep naming fallbacks for NAP issue key(s)
-#     nap_issue_mismatch = stats.get('nap_mismatch_issues', stats.get('nap_mismatches', 0))
-
-#     # Safely join T3 names
-#     t3_names = stats.get('t3_names', [])
-#     if isinstance(t3_names, (list, tuple)):
-#         t3_joined = ', '.join(t3_names)
-#     else:
-#         t3_joined = str(t3_names) if t3_names is not None else ''
-
-#     rows = [
-#         ('NAPs', stats.get('nap_count', 0)),
-#         ('Service Locations', stats.get('service_location_count', 0)),
-#         ('NIDs', stats.get('nid_count', 0)),
-#         ('Power Poles', stats.get('power_pole_count', 0)),
-#         ('Vaults', stats.get('vault_count_excluding_t3', 0)),
-#         ('T3 Vault', t3_joined),
-
-#         ('Fiber-Drop Issues', stats.get('fiber_drop_issues', 0)),
-#         ('Slack Loop Issues',
-#          stats.get('slack_dist_issues', 0)
-#          + stats.get('underground_slack_issues', 0)
-#          + stats.get('aerial_slack_issues', 0)
-#          + stats.get('tail_end_slack_issues', 0)),
-#         ('Footage Issues', stats.get('footage_issues', 0)),
-#         ('NID Drop Issues', stats.get('nid_drop_issues', 0)),
-#         ('Power Pole Issues', stats.get('power_pole_issues', 0)),
-#         ('Conduit Issues', stats.get('conduit_issues', 0)),
-#         ('Vault Issues', stats.get('vault_issues', 0)),
-#         ('SL Attributes Issues', stats.get('svc_attr_issues', 0)),
-#         ('Dist/NAP Walker Issues', stats.get('dist_nap_walker_issues', 0)),
-#         ('NAP Issues', nap_issue_mismatch
-#          + stats.get('nap_naming_issues', 0)
-#          + stats.get('nap_spec_warnings', 0)),
-#     ]
-
-#     start_row = 3
-#     for idx, (label, val) in enumerate(rows, start=start_row):
-#         cell_label = ws.cell(row=idx, column=1, value=label)
-#         cell_value = ws.cell(row=idx, column=2, value=val)
-
-#         # Bold any *issue* row when its count > 0 (rows after 'T3 Vault')
-#         if isinstance(val, int) and val > 0 and idx >= (start_row + 6):  # row after T3 Vault
-#             cell_label.font = Font(bold=True)
-#             cell_value.font = Font(bold=True)
-
-#     # Center-align the Value column
-#     for row in ws.iter_rows(min_row=1, min_col=2, max_col=2, max_row=ws.max_row):
-#         for cell in row:
-#             cell.alignment = Alignment(horizontal='center')
-
-#     # 5) Right block (D:E): PON Layers Missing/Present
-#     ws.cell(row=1, column=4, value='PON Layers Missing/Present').font = Font(bold=True)
-#     ws.cell(row=1, column=5, value='Status').font = Font(bold=True)
-
-#     patterns = [
-#         ('Conduit', f"{modules.config.DATA_DIR}/*conduit*.geojson"),
-#         ('Distribution Aerial', f"{modules.config.DATA_DIR}/*fiber-distribution-aerial*.geojson"),
-#         ('Distribution Underground', f"{modules.config.DATA_DIR}/*fiber-distribution-underground*.geojson"),
-#         ('Fiber-Drops', f"{modules.config.DATA_DIR}/*fiber-drop*.geojson"),
-#         ('NIDs', f"{modules.config.DATA_DIR}/*ni-ds*.geojson"),
-#         ('NAPs', f"{modules.config.DATA_DIR}/*nap*.geojson"),
-#         ('Power Poles', f"{modules.config.DATA_DIR}/*power-pole*.geojson"),
-#         ('Service Locations', f"{modules.config.DATA_DIR}/*service-location*.geojson"),
-#         ('Slack-Loops', f"{modules.config.DATA_DIR}/*slack-loop*.geojson"),
-#         ('Vaults', f"{modules.config.DATA_DIR}/*vault*.geojson"),
-#     ]
-
-#     # Alphabetize the right-hand block by the label shown in column D
-#     for ridx, (desc, patt) in enumerate(sorted(patterns, key=lambda x: natural_key(x[0])), start=3):
-#         desc_cell = ws.cell(row=ridx, column=4, value=desc)
-#         exists = bool(glob.glob(patt))
-#         symbol = '☑' if exists else '☐'
-#         status_cell = ws.cell(row=ridx, column=5, value=symbol)
-#         status_cell.alignment = Alignment(horizontal='center')
-
-#         # Green for present, red for missing
-#         font_color = '008000' if exists else 'FF0000'
-#         bg_color = 'C6EFCE' if exists else 'FFC7CE'
-#         status_cell.font = Font(color=font_color)
-#         status_cell.fill = PatternFill(fill_type='solid', start_color=bg_color)
-
-#         # Emphasize missing line
-#         if not exists:
-#             desc_cell.font = Font(bold=True)
-
-#     # 6) Autosize columns and apply borders
-#     auto_size(wb)
-#     apply_borders(ws)
-
-
 def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
     """
     Create an Excel sheet named 'Distribution and NAP Walker' from the issues
@@ -463,12 +337,14 @@ def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
         rows_for_log.append([str(x) if x is not None else '' for x in row_vals])
         row_idx += 1
 
-    # 5) Optional: mirror to log aligned as a table (headers + data)
-    if getattr(modules.config, "LOG_MIRROR_SHEETS", False):
-        logger.info("===== Distribution and NAP Walker =====")
+    # 5) Error-only logging (no Excel mirror)
+    from modules.basic.log_configs import format_table_lines
+    if rows_for_log:
+        logger.error(f"==== [Distribution and NAP Walker] Errors ({len(rows_for_log)}) ====")
         for line in format_table_lines(headers, rows_for_log):
-            logger.error(f"❌ [Distribution and NAP Walker] {line}")
-        logger.info("===== End Distribution and NAP Walker =====")
+            logger.error(f"[Distribution and NAP Walker] {line}")
+        logger.info("==== End [Distribution and NAP Walker] Errors ====")
+
 
     apply_borders(ws)
 
@@ -649,23 +525,25 @@ def write_person_sheets(wb, df: pd.DataFrame, patterns: list, id_col: str):
 #         ws.cell(row=r, column=2, value=f'{lat:.6f}')
 #         ws.cell(row=r, column=3, value=f'{lon:.6f}')
 
-def write_fiber_drop_sheet(wb, service_coords, drop_coords, mismatches):
+
+def write_drop_issues_sheet(wb, mismatches):
     """
-    Writes a sheet listing Service Location IDs whose
-    Splice Colors ≠ fiber-drop Color, or are missing Drops.
-    Also (optionally) mirrors the same rows to peercheck.log.
-    When both LOG_DROP_DEBUG and LOG_DROP_SHEET_TO_LOG are True,
-    the mirror is suppressed to avoid duplicate log lines.
+    'Drop Issues' sheet. Shows Service Locations that are missing drops or have a
+    color mismatch. Adds an 'Issue' column. Also logs the same errors in the log
+    (no Excel→log mirror; error-only logging instead).
     """
-    import modules.config
+    from openpyxl.styles import Font, Alignment
     import logging
+    import modules.config
+    from modules.basic.log_configs import format_table_lines
+
     logger = logging.getLogger(__name__)
 
     # 1) Create sheet
     ws = wb.create_sheet(title='Drop Issues')
     ws.freeze_panes = 'A5'
 
-    # 2) Merge A1:C3 for the banner description (expanded to cover the new Issue column)
+    # 2) Banner (A1:C3)
     ws.merge_cells('A1:C3')
     header_text = (
         'Missing Attributes on Service Locations and/or wrong Drop Color going to '
@@ -675,21 +553,21 @@ def write_fiber_drop_sheet(wb, service_coords, drop_coords, mismatches):
     header_cell = ws['A1']
     header_cell.value = header_text
     header_cell.alignment = Alignment(horizontal='center', wrap_text=True)
-    header_cell.font      = Font(bold=True)
+    header_cell.font = Font(bold=True)
 
-    # 3) Table column titles on row 4  (add Issue column)
+    # 3) Table column titles on row 4 (add Issue column)
     headers = ['Service Location ID', 'Missing Drops (Service Location ID)', 'Issue']
     for c, title in enumerate(headers, start=1):
         ws.cell(row=4, column=c, value=title)
 
     # 4) Normalize 'mismatches' to a mapping or ordered list of SIDs
-    #    Accepts: list/tuple/set of SIDs or dict {sid: missing_sid}
+    # Accepts: list/tuple/set of SIDs or dict {sid: missing_sid}
     if isinstance(mismatches, dict):
         ordered_sids = sorted(mismatches.keys())
         getter = mismatches.get
     else:
         ordered_sids = sorted(mismatches or [])
-        getter = lambda _sid: None
+        getter = lambda _sid: None  # noqa: E731
 
     # 5) Write rows (starting at row 5)
     rows_written = []
@@ -699,19 +577,84 @@ def write_fiber_drop_sheet(wb, service_coords, drop_coords, mismatches):
         if miss_val:
             ws.cell(row=idx, column=2, value=miss_val)
         # New Issue column with short description
-        ws.cell(row=idx, column=3, value="Missing drop or color mismatch")
-        rows_written.append([sid, miss_val, "Missing drop or color mismatch"])
+        issue_text = "Missing drop or color mismatch"
+        ws.cell(row=idx, column=3, value=issue_text)
+        rows_written.append([sid, miss_val, issue_text])
 
-    # 6) Optional: mirror this sheet to peercheck.log (headers + data)
-    #     • Controlled by config.LOG_DROP_SHEET_TO_LOG
-    #     • Suppressed when config.LOG_DROP_DEBUG is True to prevent double logging
-    if getattr(modules.config, "LOG_DROP_SHEET_TO_LOG", False) and not getattr(modules.config, "LOG_DROP_DEBUG", False):
-        logger.info("===== Drop Issues (Excel Mirror) =====")
-        logger.info(" | ".join(headers))
-        for row in rows_written:
-            logger.error(" | ".join(str(val) if val is not None else "" for val in row))
-        logger.info("===== End Drop Issues (Excel Mirror) =====")
+    # 6) Error-only logging (no Excel mirror)
+    if rows_written:
+        logger.error(f"==== [Drop Issues] Errors ({len(rows_written)}) ====")
+        for line in format_table_lines(headers, rows_written):
+            logger.error(f"[Drop Issues] {line}")
+        logger.info("==== End [Drop Issues] Errors ====")
+
+    # 7) Borders
     apply_borders(ws)
+
+
+# def write_fiber_drop_sheet(wb, service_coords, drop_coords, mismatches):
+#     """
+#     Writes a sheet listing Service Location IDs whose
+#     Splice Colors ≠ fiber-drop Color, or are missing Drops.
+#     Also (optionally) mirrors the same rows to peercheck.log.
+#     When both LOG_DROP_DEBUG and LOG_DROP_SHEET_TO_LOG are True,
+#     the mirror is suppressed to avoid duplicate log lines.
+#     """
+#     import modules.config
+#     import logging
+#     logger = logging.getLogger(__name__)
+
+#     # 1) Create sheet
+#     ws = wb.create_sheet(title='Drop Issues')
+#     ws.freeze_panes = 'A5'
+
+#     # 2) Merge A1:C3 for the banner description (expanded to cover the new Issue column)
+#     ws.merge_cells('A1:C3')
+#     header_text = (
+#         'Missing Attributes on Service Locations and/or wrong Drop Color going to '
+#         'Service Locations - If Errors still happen, check if the color is the '
+#         'correct color, not others like "Purple".'
+#     )
+#     header_cell = ws['A1']
+#     header_cell.value = header_text
+#     header_cell.alignment = Alignment(horizontal='center', wrap_text=True)
+#     header_cell.font      = Font(bold=True)
+
+#     # 3) Table column titles on row 4  (add Issue column)
+#     headers = ['Service Location ID', 'Missing Drops (Service Location ID)', 'Issue']
+#     for c, title in enumerate(headers, start=1):
+#         ws.cell(row=4, column=c, value=title)
+
+#     # 4) Normalize 'mismatches' to a mapping or ordered list of SIDs
+#     #    Accepts: list/tuple/set of SIDs or dict {sid: missing_sid}
+#     if isinstance(mismatches, dict):
+#         ordered_sids = sorted(mismatches.keys())
+#         getter = mismatches.get
+#     else:
+#         ordered_sids = sorted(mismatches or [])
+#         getter = lambda _sid: None
+
+#     # 5) Write rows (starting at row 5)
+#     rows_written = []
+#     for idx, sid in enumerate(ordered_sids, start=5):
+#         miss_val = getter(sid)
+#         ws.cell(row=idx, column=1, value=sid)
+#         if miss_val:
+#             ws.cell(row=idx, column=2, value=miss_val)
+#         # New Issue column with short description
+#         ws.cell(row=idx, column=3, value="Missing drop or color mismatch")
+#         rows_written.append([sid, miss_val, "Missing drop or color mismatch"])
+
+#     # 6) Optional: mirror this sheet to peercheck.log (headers + data)
+#     #     • Controlled by config.LOG_DROP_SHEET_TO_LOG
+#     #     • Suppressed when config.LOG_DROP_DEBUG is True to prevent double logging
+#     if getattr(modules.config, "LOG_DROP_SHEET_TO_LOG", False) and not getattr(modules.config, "LOG_DROP_DEBUG", False):
+#         logger.info("===== Drop Issues (Excel Mirror) =====")
+#         logger.info(" | ".join(headers))
+#         for row in rows_written:
+#             logger.error(" | ".join(str(val) if val is not None else "" for val in row))
+#         logger.info("===== End Drop Issues (Excel Mirror) =====")
+#     apply_borders(ws)
 
 
 # /mnt/data/excel_writer.py  (lines 482–643)
@@ -1154,12 +1097,10 @@ def write_nid_issues(wb, nid_issues: list):
                 d.get('drop_color',''),
                 d.get('expected_splice',''),
                 d.get('actual_splice',''),
-            ])
-
-        logger.log(_level, "===== NID Issues (Excel Mirror) =====")
+            ])       
         for line in format_table_lines(headers, rows):
             logger.error(f"[NID Issues] {line}")
-        logger.log(_level, "===== End NID Issues (Excel Mirror) =====")
+        
     apply_borders(ws)
 
 
@@ -1225,12 +1166,10 @@ def write_service_location_attr_issues(wb, records):
             ws.cell(row=r, column=col).alignment = center
 
     # Logging mirror (restored)
-    if getattr(modules.config, "LOG_MIRROR_SHEETS", False) and getattr(modules.config, "LOG_SVCLOC_SHEET_TO_LOG", False):
-        logger.info("===== Service Location Issues (Excel Mirror) =====")
+    if getattr(modules.config, "LOG_MIRROR_SHEETS", False) and getattr(modules.config, "LOG_SVCLOC_SHEET_TO_LOG", False):       
         logger.info(" | ".join(headers))
         for row in rows_written:
             logger.error(" | ".join(str(v) if v is not None else "" for v in row))
-        logger.info("===== End Service Location Issues (Excel Mirror) =====")
     apply_borders(ws)
 
 
@@ -1343,22 +1282,27 @@ def write_nap_issues_sheet(wb, nap_mismatches, id_format_issues):
 
         col += len(headers) + GAP
 
-    # Optional log mirror, kept intact
-    if getattr(modules.config, "LOG_MIRROR_SHEETS", False) and getattr(modules.config, "LOG_NAP_SHEET_TO_LOG", False):
-        logger.info("===== NAP Issues (Excel Mirror) =====")
-        if a_rows:
-            logger.info("[NAP Mismatches] " + " | ".join(a_headers))
-            for r in a_rows:
-                logger.error(" | ".join(str(v) if v is not None else "" for v in r))
-        if b_rows:
-            logger.info("[NAP Naming Issues] " + " | ".join(b_headers))
-            for r in b_rows:
-                logger.error(" | ".join(str(v) if v is not None else "" for v in r))
-        if c_rows:
-            logger.info("[Warnings (NAP Specs)] " + " | ".join(c_headers))
-            for r in c_rows:
-                logger.error(" | ".join(str(v) if v is not None else "" for v in r))
-        logger.info("===== End NAP Issues (Excel Mirror) =====")
+    from modules.basic.log_configs import format_table_lines
+
+    # Error-only logging for each NAP block (no Excel mirror)
+    if a_rows:
+        logger.error(f"==== [NAP Mismatches] Errors ({len(a_rows)}) ====")
+        for line in format_table_lines(a_headers, a_rows):
+            logger.error(f"[NAP Mismatches] {line}")
+        logger.info("==== End [NAP Mismatches] Errors ====")
+
+    if b_rows:
+        logger.error(f"==== [NAP Naming Issues] Errors ({len(b_rows)}) ====")
+        for line in format_table_lines(b_headers, b_rows):
+            logger.error(f"[NAP Naming Issues] {line}")
+        logger.info("==== End [NAP Naming Issues] Errors ====")
+
+    if c_rows:
+        logger.error(f"==== [Warnings (NAP Specs)] Errors ({len(c_rows)}) ====")
+        for line in format_table_lines(c_headers, c_rows):
+            logger.error(f"[Warnings (NAP Specs)] {line}")
+        logger.info("==== End [Warnings (NAP Specs)] Errors ====")
+
 
     apply_borders(ws)
 
