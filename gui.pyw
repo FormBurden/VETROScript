@@ -269,7 +269,7 @@ class PeerCheckGUI(tk.Tk):
         pad = {"padx": 12, "pady": 8}
 
         # Determine last Output first (from local bootstrap), then set prefs base
-        last_out = modules.config.get_bootstrap_last_output_dir(default=os.path.abspath(os.getcwd()))
+        last_out = modules.config.get_bootstrap_last_output_dir()
         modules.config.set_prefs_base_dir(last_out)
 
         # --- Data Folder ---
@@ -405,9 +405,7 @@ class PeerCheckGUI(tk.Tk):
 
     # --- callbacks ---
     def _browse_out_dir(self):
-        start = modules.config.get_bootstrap_last_output_dir(
-            default=os.path.abspath(os.getcwd())
-        )
+        start = modules.config.get_bootstrap_last_output_dir()
         path = filedialog.askdirectory(
             title="Select Output Folder",
             mustexist=True,
