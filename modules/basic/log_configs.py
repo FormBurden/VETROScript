@@ -1,4 +1,4 @@
-# modules/basic/abbrev_header.py
+# modules/basic/log_configs.py
 import logging
 import modules.config
 

@@ -1,4 +1,4 @@
-# modules/nap_rules.py
+# modules/simple_scripts/nap_rules.py
 import glob
 import json
 import re

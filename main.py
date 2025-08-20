@@ -353,6 +353,9 @@ def main(data_dir=None, gui_out_path=None):
             wb.remove(default)
         auto_size(wb)
 
+        from modules.simple_scripts.excel_writer import drop_empty_issue_sheets
+        drop_empty_issue_sheets(wb)
+
         # Save
         save_workbook(wb, xlsx_path)
 

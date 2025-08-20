@@ -1,3 +1,5 @@
+# modules/hard_scripts/distribution_walker.py
+
 import glob
 import json
 import logging

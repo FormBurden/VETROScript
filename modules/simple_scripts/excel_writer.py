@@ -1,4 +1,4 @@
-# excel_writer.py
+# modules/simple_scripts/excel_writer.py
 
 import logging
 from openpyxl import Workbook
@@ -35,6 +35,57 @@ def auto_size(wb):
             cells = col[1:] if ws.title == 'Drop Issues' else col
             w = max((len(str(c.value)) for c in cells if c.value), default=0) + 2
             ws.column_dimensions[get_column_letter(col[0].column)].width = w    
+
+def drop_empty_issue_sheets(wb):
+    """
+    Remove any issue-oriented worksheet that ended up empty (no data rows),
+    unless SHOW_ALL_SHEETS is True.
+
+    A sheet is considered "issue-oriented" if:
+      • Its title contains "Issue" or "Issues", OR
+      • It matches one of the common issue sheet names below.
+
+    Data check: any non-empty cell exists at/after row 2 (row 1 is usually headers).
+    """
+    import modules.config
+
+    if getattr(modules.config, "SHOW_ALL_SHEETS", False):
+        return
+
+    COMMON_ISSUE_SHEETS = {
+        "Drop Issues",
+        "Slack Loop Issues",
+        "Conduit Issues",
+        "Vault Issues",
+        "Power Pole Issues",
+        "NID Issues",
+        "Footage Issues",
+        "Distribution and NAP Walker",
+    }
+
+    def _is_issue_sheet(title: str) -> bool:
+        t = str(title or "")
+        return ("Issue" in t) or (t in COMMON_ISSUE_SHEETS)
+
+    # don’t touch informational sheets
+    KEEP_ALWAYS = {"PON Statistics", "GeoJSON Summary"}
+
+    for ws in list(wb.worksheets):
+        if ws.title in KEEP_ALWAYS:
+            continue
+        if not _is_issue_sheet(ws.title):
+            continue
+
+        # Any non-empty cell from row 2 down?
+        has_data = False
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, values_only=True):
+            if any(v not in (None, "") for v in row):
+                has_data = True
+                break
+
+        if not has_data:
+            wb.remove(ws)
+
 
 def natural_key(s: str):
     """Split a string into text and number chunks for natural ordering."""
@@ -172,11 +223,11 @@ def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
       - nap_id (str)
       - dist_id (str)
       - svc_id (str)
-      - found_drop_color (str)  # for 'Drop color not expected at NAP'
-      - drop_color (str)        # for 'Service Location splice color mismatch'
+      - found_drop_color (str)   # for 'Drop color not expected at NAP'
+      - drop_color (str)         # for 'Service Location splice color mismatch'
       - svc_colors (list[str])
       - expected_colors (list[str])
-      - found_drops (list[dict])  # each: {drop_id, color, distance_m}
+      - found_drops (list[dict]) # {drop_id, color, distance_m}
       - missing_colors (list[str])
       - issue (str)
     """
@@ -186,6 +237,10 @@ def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
     from modules.basic.log_configs import format_table_lines
 
     logger = logging.getLogger(__name__)
+
+    # If there are no issues and we’re not in “show all” mode, do not create the sheet.
+    if not issues and not getattr(modules.config, "SHOW_ALL_SHEETS", False):
+        return  # ← key change: nothing written, sheet won’t exist
 
     # 1) Create sheet
     ws = wb.create_sheet(title='Distribution and NAP Walker')
@@ -220,7 +275,6 @@ def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
     def _fmt_found_drops(v):
         if not isinstance(v, (list, tuple)):
             return ''
-        # "drop_id=color(d=XXXm)" for each
         out = []
         for d in v:
             if not isinstance(d, dict):
@@ -229,24 +283,21 @@ def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
             col = d.get('color', '')
             dist = d.get('distance_m', '')
             dist_part = f"d={dist}m" if dist != '' else ""
-            if dist_part:
-                out.append(f"{did}={col}({dist_part})")
-            else:
-                out.append(f"{did}={col}")
+            out.append(f"{did}={col}({dist_part})" if dist_part else f"{did}={col}")
         return ', '.join(out)
 
     # 4) Rows
     rows_for_log = []
     row_idx = 2
     for it in (issues or []):
-        path      = it.get('path', '')
-        nap_id    = it.get('nap_id', '')
-        dist_id   = it.get('dist_id', '')
-        svc_id    = it.get('svc_id', '')
-        drop_col  = it.get('found_drop_color') or it.get('drop_color', '')
-        svc_cols  = _csv(it.get('svc_colors', []))
-        expected  = _csv(it.get('expected_colors', []))
-        missing   = _csv(it.get('missing_colors', []))
+        path = it.get('path', '')
+        nap_id = it.get('nap_id', '')
+        dist_id = it.get('dist_id', '')
+        svc_id = it.get('svc_id', '')
+        drop_col = it.get('found_drop_color') or it.get('drop_color', '')
+        svc_cols = _csv(it.get('svc_colors', []))
+        expected = _csv(it.get('expected_colors', []))
+        missing = _csv(it.get('missing_colors', []))
         found_dps = _fmt_found_drops(it.get('found_drops', []))
         issue_txt = (it.get('issue') or '').strip()
 
@@ -260,10 +311,114 @@ def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
     if getattr(modules.config, "LOG_MIRROR_SHEETS", False):
         logger.info("===== Distribution and NAP Walker =====")
         for line in format_table_lines(headers, rows_for_log):
-            # These are all issues by definition of the source list — log as ERROR for visibility
             logger.error(f"❌ [Distribution and NAP Walker] {line}")
         logger.info("===== End Distribution and NAP Walker =====")
+
     apply_borders(ws)
+
+
+# def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
+#     """
+#     Create an Excel sheet named 'Distribution and NAP Walker' from the issues
+#     returned by modules.hard_scripts.distribution_walker.find_deep_distribution_mismatches().
+
+#     Expected issue keys (any may be absent depending on issue type):
+#       - path (str)
+#       - nap_id (str)
+#       - dist_id (str)
+#       - svc_id (str)
+#       - found_drop_color (str)  # for 'Drop color not expected at NAP'
+#       - drop_color (str)        # for 'Service Location splice color mismatch'
+#       - svc_colors (list[str])
+#       - expected_colors (list[str])
+#       - found_drops (list[dict])  # each: {drop_id, color, distance_m}
+#       - missing_colors (list[str])
+#       - issue (str)
+#     """
+#     from openpyxl.styles import Font, Alignment
+#     import logging
+#     import modules.config
+#     from modules.basic.log_configs import format_table_lines
+
+#     logger = logging.getLogger(__name__)
+
+#     # 1) Create sheet
+#     ws = wb.create_sheet(title='Distribution and NAP Walker')
+#     ws.freeze_panes = 'A2'
+
+#     # 2) Header row
+#     headers = [
+#         'Path',
+#         'NAP ID',
+#         'Dist. ID',
+#         'Service Location ID',
+#         'Drop Color',
+#         'SL Colors',
+#         'Expected Colors',
+#         'Missing Colors',
+#         'Found Drops',
+#         'Issue',
+#     ]
+#     for c, title in enumerate(headers, start=1):
+#         cell = ws.cell(row=1, column=c, value=title)
+#         cell.font = Font(bold=True)
+#         cell.alignment = Alignment(horizontal='center')
+
+#     # 3) Normalize helpers
+#     def _csv(v):
+#         if v is None:
+#             return ''
+#         if isinstance(v, (list, tuple, set)):
+#             return ', '.join(str(x) for x in v)
+#         return str(v)
+
+#     def _fmt_found_drops(v):
+#         if not isinstance(v, (list, tuple)):
+#             return ''
+#         # "drop_id=color(d=XXXm)" for each
+#         out = []
+#         for d in v:
+#             if not isinstance(d, dict):
+#                 continue
+#             did = d.get('drop_id', '')
+#             col = d.get('color', '')
+#             dist = d.get('distance_m', '')
+#             dist_part = f"d={dist}m" if dist != '' else ""
+#             if dist_part:
+#                 out.append(f"{did}={col}({dist_part})")
+#             else:
+#                 out.append(f"{did}={col}")
+#         return ', '.join(out)
+
+#     # 4) Rows
+#     rows_for_log = []
+#     row_idx = 2
+#     for it in (issues or []):
+#         path      = it.get('path', '')
+#         nap_id    = it.get('nap_id', '')
+#         dist_id   = it.get('dist_id', '')
+#         svc_id    = it.get('svc_id', '')
+#         drop_col  = it.get('found_drop_color') or it.get('drop_color', '')
+#         svc_cols  = _csv(it.get('svc_colors', []))
+#         expected  = _csv(it.get('expected_colors', []))
+#         missing   = _csv(it.get('missing_colors', []))
+#         found_dps = _fmt_found_drops(it.get('found_drops', []))
+#         issue_txt = (it.get('issue') or '').strip()
+
+#         row_vals = [path, nap_id, dist_id, svc_id, drop_col, svc_cols, expected, missing, found_dps, issue_txt]
+#         for c, val in enumerate(row_vals, start=1):
+#             ws.cell(row=row_idx, column=c, value=val)
+#         rows_for_log.append([str(x) if x is not None else '' for x in row_vals])
+#         row_idx += 1
+
+#     # 5) Optional: mirror to log aligned as a table (headers + data)
+#     if getattr(modules.config, "LOG_MIRROR_SHEETS", False):
+#         logger.info("===== Distribution and NAP Walker =====")
+#         for line in format_table_lines(headers, rows_for_log):
+#             # These are all issues by definition of the source list — log as ERROR for visibility
+#             logger.error(f"❌ [Distribution and NAP Walker] {line}")
+#         logger.info("===== End Distribution and NAP Walker =====")
+#     apply_borders(ws)
 
 
 
@@ -1250,82 +1405,6 @@ def write_conduit_sheet(wb, results: dict):
 
     apply_borders(ws)
 
-
-
-
-# def write_conduit_sheet(wb, results: dict):
-#     """
-#     Create a 'Conduit' worksheet with two blocks:
-#       • Distribution Without Conduit
-#       • Conduit Type Issues
-#     `results` is the dict returned by run_all_conduit_checks().
-#     """
-#     from openpyxl.styles import Alignment, Font
-
-#     ws = wb.create_sheet(title='Conduit')
-#     ws.freeze_panes = 'A3'
-
-#     # Pull lists (use empty list if missing)
-#     df_missing = results.get('df_missing_conduit', []) or []
-#     type_issues = results.get('type_issues', []) or []
-
-#     # Left block: Distributions without conduit
-#     left_title = "Distribution Without Conduit"
-#     left_headers = ["Distribution ID", "Vetro ID", "Issue"]
-#     left_rows = [
-#         [str(row.get("Distribution ID","")), str(row.get("Vetro ID","")), str(row.get("Issue",""))]
-#         for row in df_missing
-#     ]
-
-#     # Right block: Conduit Type issues
-#     right_title = "Conduit Type Issues"
-#     right_headers = ["Conduit ID", "Conduit Vetro ID", "Conduit Type", "Issue"]
-#     right_rows = [
-#         [
-#             str(row.get("Conduit ID","")),
-#             str(row.get("Conduit Vetro ID","")),
-#             str(row.get("Conduit Type","")),
-#             str(row.get("Issue","")),
-#         ]
-#         for row in type_issues
-#     ]
-
-#     DETAIL_ROW = 1
-#     LEFT_COL_START = 1
-#     RIGHT_COL_START = 6
-
-#     # Draw Left block
-#     ws.merge_cells(start_row=DETAIL_ROW, start_column=LEFT_COL_START,
-#                    end_row=DETAIL_ROW, end_column=LEFT_COL_START + len(left_headers) - 1)
-#     th = ws.cell(row=DETAIL_ROW, column=LEFT_COL_START, value=left_title)
-#     th.font = Font(bold=True); th.alignment = Alignment(horizontal="center")
-
-#     for i, h in enumerate(left_headers, start=LEFT_COL_START):
-#         hc = ws.cell(row=DETAIL_ROW + 1, column=i, value=h)
-#         hc.font = Font(bold=True); hc.alignment = Alignment(horizontal="center")
-
-#     r = DETAIL_ROW + 2
-#     for row_vals in left_rows:
-#         for i, val in enumerate(row_vals, start=LEFT_COL_START):
-#             ws.cell(row=r, column=i, value=val)
-#         r += 1
-
-#     # Draw Right block
-#     ws.merge_cells(start_row=DETAIL_ROW, start_column=RIGHT_COL_START,
-#                    end_row=DETAIL_ROW, end_column=RIGHT_COL_START + len(right_headers) - 1)
-#     th2 = ws.cell(row=DETAIL_ROW, column=RIGHT_COL_START, value=right_title)
-#     th2.font = Font(bold=True); th2.alignment = Alignment(horizontal="center")
-
-#     for i, h in enumerate(right_headers, start=RIGHT_COL_START):
-#         hc = ws.cell(row=DETAIL_ROW + 1, column=i, value=h)
-#         hc.font = Font(bold=True); hc.alignment = Alignment(horizontal="center")
-
-#     r2 = DETAIL_ROW + 2
-#     for row_vals in right_rows:
-#         for i, val in enumerate(row_vals, start=RIGHT_COL_START):
-#             ws.cell(row=r2, column=i, value=val)
-#         r2 += 1
-#     apply_borders(ws)
 
 def write_vaults_sheet(wb, results: dict):
     """

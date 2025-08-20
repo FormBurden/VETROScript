@@ -1,4 +1,4 @@
-# modules/service_locations.py
+# modules/simple_scripts/service_locations.py
 # All rules and validations for service locations.
 
 import logging

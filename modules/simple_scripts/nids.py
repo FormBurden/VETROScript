@@ -1,3 +1,5 @@
+# modules/simple_scripts/nids.py
+
 import logging
 import glob
 import json

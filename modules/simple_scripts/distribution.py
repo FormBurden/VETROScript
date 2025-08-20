@@ -1,4 +1,4 @@
-# modules/distribution.py
+# modules/simple_scripts/distribution.py
 # Everything to do with distribution lines; including Aerial and Underground.
 import logging
 import glob

@@ -1,3 +1,5 @@
+# modules/simple_scripts/network_statistics.py
+
 import logging
 import glob
 import modules.config

@@ -222,33 +222,6 @@ def find_vaults_missing_conduit(tolerance_ft: float | None = None) -> List[dict]
     return out
 
 
-# def find_vaults_missing_conduit() -> List[dict]:
-#     """
-#     Every vault coordinate must have conduit on it.
-
-#     Returns rows:
-#       { "Vault Vetro ID": <vetro_id>, "Issue": "No Conduit at vault" }
-#     """
-#     conduits = _load_conduits()
-#     conduit_vertices = _collect_conduit_vertices(conduits)
-
-#     vault_coords, vault_map = load_features("vault", "vetro_id")
-#     out: List[dict] = []
-#     for (lat, lon) in vault_coords:
-#         # touch if within THRESHOLD_M of any conduit vertex
-#         has_touch = any(haversine(lat, lon, clat, clon) <= THRESHOLD_M
-#                         for (clat, clon) in conduit_vertices)
-#         if not has_touch:
-#             out.append({
-#                 "Vault Vetro ID": vault_map.get((round(lat, 6), round(lon, 6)), ""),
-#                 "Issue": "No Conduit at vault",
-#             })
-#     return out
-
-
-# ---------------------------------------------------------
-# B) Vault spacing along same conduit ≤ 500 ft (default)
-# ---------------------------------------------------------
 def find_vault_spacing_issues(max_gap_ft: float = 500.0) -> List[dict]:
     """
     Walk each conduit polyline; project touching vaults to closest vertices; compute along-run
