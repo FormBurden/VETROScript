@@ -108,28 +108,6 @@ def _load_slack_loops_with_labels_and_coords():
     return out
 
 
-
-# def _load_slack_loops_with_labels_and_coords():
-#     """
-#     Return list of (lat, lon, slack_vid, fiber_label, slack_loop_label).
-#     """
-#     out = []
-#     for fn in glob.glob(f'{modules.config.DATA_DIR}/*slack-loop*.geojson'):
-#         with open(fn, encoding='utf-8') as f:
-#             gj = json.load(f)
-#         for feat in gj.get('features', []):
-#             props     = feat.get('properties', {})
-#             slack_vid = props.get('vetro_id')
-#             fl        = props.get('Fiber Label')
-#             sl        = props.get('Slack Loop')
-#             geom      = feat.get('geometry', {})
-#             coords    = geom.get('coordinates', [])
-#             if not slack_vid or not fl or len(coords) < 2:
-#                 continue
-#             lon, lat = coords[0], coords[1]
-#             out.append((lat, lon, slack_vid, fl, sl))
-#     return out
-
 def find_underground_slack_mismatches(nap_coords, vault_coords, vault_map):
     """
     For each allowed Vault/NAP anchor:
@@ -346,10 +324,18 @@ def find_distribution_end_tail_issues() -> list[tuple[str, str, str, str, str]]:
         expected_label,       # e.g., "30' Tail" (or just "Tail" if length unknown)
         issue                 # brief reason, e.g., "No slack loop near distribution end" or "Slack loop label missing 'Tail'"
       )
+
+    Side-effect:
+      Sets a module-level parallel list `_LAST_TAIL_END_DIST_IDS` aligned to the returned rows,
+      where each element is the Distribution *vetro_id* for "No slack..." rows, or "" otherwise.
     """
     import glob, json, re
     import modules.config
     from modules.basic.distance_utils import haversine, THRESHOLD_M
+
+    # Sidecar for excel_writer to optionally include "Distribution ID" column
+    global _LAST_TAIL_END_DIST_IDS
+    _LAST_TAIL_END_DIST_IDS = []
 
     # --- Load all Slack Loops once: (lat, lon, vetro_id, fiber_label, slack_loop_label)
     slack_pts: list[tuple[float, float, str, str, str]] = _load_slack_loops_with_labels_and_coords()
@@ -373,18 +359,22 @@ def find_distribution_end_tail_issues() -> list[tuple[str, str, str, str, str]]:
             return f"{m.group(1)}' Tail"
         return "Tail"
 
-    def _load_dist(kind: str) -> dict[str, list[list[list[float]]]]:
+    def _load_dist(kind: str) -> tuple[dict[str, list[list[list[float]]]], dict[str, str]]:
         """
         kind: 'fiber-distribution-aerial' | 'fiber-distribution-underground'
-        Returns mapping: dist_id -> [segments], each segment is a list of [lon, lat].
+        Returns:
+          mapping:     dist_id -> [segments], each segment is a list of [lon, lat]
+          vetro_map:   dist_id -> vetro_id (from properties 'vetro_id' or 'Vetro ID' if present)
         """
         mapping: dict[str, list[list[list[float]]]] = {}
+        vetro_map: dict[str, str] = {}
         for fn in glob.glob(f"{modules.config.DATA_DIR}/*{kind}*.geojson"):
             with open(fn, encoding="utf-8") as f:
                 gj = json.load(f)
             for feat in gj.get("features", []):
                 props = feat.get("properties", {}) or {}
                 dist_id = props.get("ID")
+                dist_vetro = props.get("vetro_id") or props.get("Vetro ID") or props.get("vetroid") or ""
                 geom = feat.get("geometry", {}) or {}
                 typ = geom.get("type")
                 coords = geom.get("coordinates", []) or []
@@ -395,7 +385,10 @@ def find_distribution_end_tail_issues() -> list[tuple[str, str, str, str, str]]:
                 elif typ == "MultiLineString":
                     for seg in coords:
                         mapping.setdefault(dist_id, []).append(seg)
-        return mapping
+                # Keep first seen vetro_id if present
+                if dist_id and dist_vetro and dist_id not in vetro_map:
+                    vetro_map[dist_id] = dist_vetro
+        return mapping, vetro_map
 
     def _terminal_ends(segments: list[list[list[float]]]) -> list[tuple[float, float]]:
         """Compute terminal endpoints (points that appear once among segment endpoints)."""
@@ -416,9 +409,10 @@ def find_distribution_end_tail_issues() -> list[tuple[str, str, str, str, str]]:
 
     rows: list[tuple[str, str, str, str, str]] = []
 
-    for kind, type_uc in (("fiber-distribution-aerial", "AERIAL"), ("fiber-distribution-underground", "UNDERGROUND")):
-        dist_map = _load_dist(kind)
+    for kind, type_uc in (("fiber-distribution-aerial", "Aerial"), ("fiber-distribution-underground", "Underground")):
+        dist_map, vetro_map = _load_dist(kind)
         for _dist_id, segments in dist_map.items():
+            dist_vetro = vetro_map.get(_dist_id, "")
             for lat_e, lon_e in _terminal_ends(segments):
                 hits = nearby_slacks(lat_e, lon_e)
 
@@ -431,117 +425,9 @@ def find_distribution_end_tail_issues() -> list[tuple[str, str, str, str, str]]:
                     for vid, lbl in hits:
                         expected = _expected_from_label(lbl)
                         rows.append((vid, type_uc, lbl, expected, "Slack loop label missing 'Tail'"))
+                        _LAST_TAIL_END_DIST_IDS.append("")  # Dist ID column should stay blank for this issue
                 else:
                     rows.append(("", type_uc, "", "Tail", "No slack loop near distribution end"))
+                    _LAST_TAIL_END_DIST_IDS.append(dist_vetro or "")
 
     return rows
-
-
-# # modules/simple_scripts/slack_loops.py — REPLACE the whole function below
-# def find_distribution_end_tail_issues() -> list[tuple[str, str, str, str]]:
-#     """
-#     At each *terminal endpoint* of every Distribution (AERIAL & UNDERGROUND),
-#     check nearby Slack Loops. If at least one nearby slack loop's "Slack Loop"
-#     attribute contains the word "Tail" (case-insensitive substring), it's OK.
-#     Otherwise, flag it.
-
-#     Return rows shaped for Excel "Tail End" block (one slack per row when wrong):
-#         (
-#             slack_loop_vetro_id,         # string ('' when no slack is present)
-#             TYPE,                        # 'AERIAL' or 'UNDERGROUND' (uppercased)
-#             slack_loop_label,            # raw "Slack Loop" attribute ('' if none)
-#             expected_label               # e.g., "30' Tail" (or just "Tail" if length unknown)
-#         )
-#     """
-#     import glob, json, re
-#     import modules.config
-#     from modules.basic.distance_utils import haversine, THRESHOLD_M
-
-#     # --- Load all Slack Loops once: (lat, lon, vetro_id, fiber_label, slack_loop_label)
-#     slack_pts: list[tuple[float, float, str, str, str]] = _load_slack_loops_with_labels_and_coords()
-
-#     def nearby_slacks(lat_e: float, lon_e: float) -> list[tuple[str, str]]:
-#         """Return [(vetro_id, slack_loop_label)] within THRESHOLD_M of endpoint."""
-#         hits: list[tuple[str, str]] = []
-#         for sl_lat, sl_lon, sl_vid, _fiber_lbl, sl_label in slack_pts:
-#             if haversine(lat_e, lon_e, sl_lat, sl_lon) <= THRESHOLD_M:
-#                 hits.append((sl_vid or "", (sl_label or "").strip()))
-#         return hits
-
-#     def _expected_from_label(label: str) -> str:
-#         """
-#         Pull the leading footage (e.g., 30, 60, 70, 90) from the *found* label and
-#         express expectation as "<N>' Tail". If no number: return "Tail".
-#         """
-#         if not label:
-#             return "Tail"
-#         m = re.search(r"(\d+)\s*'?\\s*", label)
-#         if m:
-#             return f"{m.group(1)}' Tail"
-#         return "Tail"
-
-#     def _load_dist(kind: str) -> dict[str, list[list[list[float]]]]:
-#         """
-#         kind: 'fiber-distribution-aerial' | 'fiber-distribution-underground'
-#         Returns mapping: dist_id -> [segments], each segment is a list of [lon, lat].
-#         """
-#         mapping: dict[str, list[list[list[float]]]] = {}
-#         for fn in glob.glob(f"{modules.config.DATA_DIR}/*{kind}*.geojson"):
-#             with open(fn, encoding="utf-8") as f:
-#                 gj = json.load(f)
-#             for feat in gj.get("features", []):
-#                 props = feat.get("properties", {}) or {}
-#                 dist_id = props.get("ID")
-#                 geom    = feat.get("geometry", {}) or {}
-#                 typ     = geom.get("type")
-#                 coords  = geom.get("coordinates", []) or []
-#                 if not dist_id or not coords:
-#                     continue
-#                 if typ == "LineString":
-#                     mapping.setdefault(dist_id, []).append(coords)
-#                 elif typ == "MultiLineString":
-#                     for seg in coords:
-#                         mapping.setdefault(dist_id, []).append(seg)
-#         return mapping
-
-#     def _terminal_ends(segments: list[list[list[float]]]) -> list[tuple[float, float]]:
-#         """Compute terminal endpoints (points that appear once among segment endpoints)."""
-#         from collections import Counter
-#         def rnd(lat: float, lon: float) -> tuple[float, float]:
-#             return (round(lat, 6), round(lon, 6))
-
-#         counts = Counter()
-#         for seg in segments or []:
-#             if not seg:
-#                 continue
-#             first = seg[0]
-#             last  = seg[-1]
-#             counts[rnd(first[1], first[0])] += 1  # [lon, lat] -> (lat, lon)
-#             counts[rnd(last[1],  last[0])]  += 1
-#         return [pt for pt, c in counts.items() if c == 1]
-
-#     rows: list[tuple[str, str, str, str]] = []
-
-#     for kind, type_uc in (("fiber-distribution-aerial", "AERIAL"),
-#                           ("fiber-distribution-underground", "UNDERGROUND")):
-#         dist_map = _load_dist(kind)
-
-#         for _dist_id, segments in dist_map.items():
-#             for lat_e, lon_e in _terminal_ends(segments):
-#                 hits = nearby_slacks(lat_e, lon_e)
-
-#                 # If any nearby slack has "Tail" anywhere in its label ⇒ OK
-#                 if any("tail" in (lbl.lower()) for _vid, lbl in hits if lbl):
-#                     continue
-
-#                 # Otherwise, flag. Emit one row per *non-tail* slack if present.
-#                 if hits:
-#                     for vid, lbl in hits:
-#                         # Expected keeps the same footage if present, but forces "Tail"
-#                         expected = _expected_from_label(lbl)
-#                         rows.append((vid, type_uc, lbl, expected))
-#                 else:
-#                     # No slack present near terminal — emit one row with EMPTY vetro_id/label
-#                     rows.append(("", type_uc, "", "Tail"))
-
-#     return rows

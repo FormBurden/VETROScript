@@ -661,21 +661,54 @@ def write_slack_loop_issues_sheet(wb, sd_issues, ug_issues, aerial_issues=None, 
             "width": 4,
         })
 
+
     # Block D: Tail End (Distribution End Tail issues)
     if (tail_issues and len(tail_issues) > 0) or show_all:
-        blocks.append({
-            "title": "Distribution End Tail Issues",
-            "headers": [
-                "Slack Loop ID", "Type", "Slack Loop", "Expected Slack Loop", "Issue",
-            ],
-            "rows": [
+        # Detect if we have any "No slack..." rows; only then add the extra column.
+        has_no_slack = any(
+            (str(issue or "").lower().startswith("no slack loop near distribution end"))
+            for (_vid, _kind, _lbl, _exp, issue) in (tail_issues or [])
+        )
+
+        headers = [
+            "Slack Loop ID", "Type", "Slack Loop", "Expected Slack Loop", "Issue",
+        ]
+
+        # Try to pull the sidecar Distribution IDs aligned to tail_issues from slack_loops
+        sidecar = None
+        if has_no_slack:
+            try:
+                from modules.simple_scripts import slack_loops as _slack_loops_mod
+                sidecar = getattr(_slack_loops_mod, "_LAST_TAIL_END_DIST_IDS", None)
+                # Basic sanity: must be same length to rely on alignment
+                if sidecar is not None and len(sidecar) != len(tail_issues):
+                    sidecar = None
+            except Exception:
+                sidecar = None
+
+        rows = []
+        if has_no_slack:
+            headers.append("Distribution ID")
+            for idx, (vid, kind, lbl, exp, issue) in enumerate(tail_issues or []):
+                dist_id = ""
+                if sidecar is not None:
+                    dist_id = sidecar[idx] if str(issue or "").lower().startswith("no slack loop near distribution end") else ""
+                rows.append([_join(vid), _join(kind), _join(lbl), _join(exp), _join(issue), _join(dist_id)])
+            width = 6
+        else:
+            rows = [
                 [_join(vid), _join(kind), _join(lbl), _join(exp), _join(issue)]
                 for (vid, kind, lbl, exp, issue) in (tail_issues or [])
-            ],
-            "width": 5,
+            ]
+            width = 5
+
+        blocks.append({
+            "title": "Distribution End Tail Issues",
+            "headers": headers,
+            "rows": rows,
+            "width": width,
         })
 
-    # If nothing to show and not SHOW_ALL_SHEETS, still draw a single empty block to keep the sheet.
     if not blocks:
         blocks = [{
             "title": "Slack-Distribution Mismatches",
@@ -695,6 +728,7 @@ def write_slack_loop_issues_sheet(wb, sd_issues, ug_issues, aerial_issues=None, 
         # Title cell for this block
         tcell = ws.cell(row=DETAIL_START_ROW, column=current_col, value=title)
         tcell.font = Font(bold=True)
+        tcell.alignment = Alignment(horizontal="center")
         ws.merge_cells(
             start_row=DETAIL_START_ROW,
             start_column=current_col,
@@ -785,83 +819,6 @@ def write_footage_issues_sheet(wb, mismatches):
         col += len(headers) + GAP
 
     apply_borders(ws)
-
-
-# def write_footage_issues_sheet(wb, mismatches):
-#     """
-#     Render a 'Footage Issues' sheet with two side-by-side blocks:
-
-#       Left  : Distribution Footage — Missing/Invalid Note
-#       Right : Fiber Drops > 250 ft
-#     """
-#     from openpyxl.styles import Alignment, Font
-#     from modules.simple_scripts.footage_issues import find_overlength_drop_cables
-
-#     ws = wb.create_sheet(title='Footage Issues')
-
-#     # ---- Left block (Distribution Note issues)
-#     left_title   = "Distribution Footage Length on Notes field — Missing/Invalid Note"
-#     left_headers = ["Distribution ID", "Type", "Vetro ID", "Issue"]
-#     left_rows = []
-#     for dist_id, kind, vetro_id in (mismatches or []):
-#         k = (kind or "").lower()
-#         type_str = "Aerial" if "aerial" in k else ("Underground" if "underground" in k else "")
-#         left_rows.append([
-#             str(dist_id or ""),
-#             type_str,
-#             str(vetro_id or ""),
-#             'Missing or invalid "Note" footage value',
-#         ])
-
-#     # ---- Right block (Overlength DROP cables > 250 ft)
-#     overlength = find_overlength_drop_cables(limit_ft=250.0)
-#     right_title   = "Fiber Drops > 250 ft"
-#     right_headers = ["Vetro ID", "Type", "Length (ft)", "Issues"]
-#     right_rows = []
-#     for vetro_id, type_str, total_len in (overlength or []):
-#         val = f"{float(total_len):.2f}" if isinstance(total_len, (int, float)) else str(total_len or "")
-#         right_rows.append([str(vetro_id or ""), str(type_str or ""), val, "Over 250 ft"])
-
-#     # ---- Layout config
-#     DETAIL_ROW = 1
-#     LEFT_COL_START = 1
-#     RIGHT_COL_START = 6  # leave a 1-col gutter between blocks
-
-#     # ---- Draw Left block
-#     ws.merge_cells(start_row=DETAIL_ROW, start_column=LEFT_COL_START,
-#                    end_row=DETAIL_ROW, end_column=LEFT_COL_START + len(left_headers) - 1)
-#     th = ws.cell(row=DETAIL_ROW, column=LEFT_COL_START, value=left_title)
-#     th.font = Font(bold=True); th.alignment = Alignment(horizontal="center")
-
-#     for i, h in enumerate(left_headers, start=LEFT_COL_START):
-#         hc = ws.cell(row=DETAIL_ROW + 1, column=i, value=h)
-#         hc.font = Font(bold=True); hc.alignment = Alignment(horizontal="center")
-
-#     r = DETAIL_ROW + 2
-#     for row_vals in left_rows:
-#         for i, val in enumerate(row_vals, start=LEFT_COL_START):
-#             ws.cell(row=r, column=i, value=val)
-#         r += 1
-
-#     # ---- Draw Right block
-#     ws.merge_cells(start_row=DETAIL_ROW, start_column=RIGHT_COL_START,
-#                    end_row=DETAIL_ROW, end_column=RIGHT_COL_START + len(right_headers) - 1)
-#     th2 = ws.cell(row=DETAIL_ROW, column=RIGHT_COL_START, value=right_title)
-#     th2.font = Font(bold=True); th2.alignment = Alignment(horizontal="center")
-
-#     for i, h in enumerate(right_headers, start=RIGHT_COL_START):
-#         hc = ws.cell(row=DETAIL_ROW + 1, column=i, value=h)
-#         hc.font = Font(bold=True); hc.alignment = Alignment(horizontal="center")
-
-#     r = DETAIL_ROW + 2
-#     for row_vals in right_rows:
-#         for i, val in enumerate(row_vals, start=RIGHT_COL_START):
-#             ws.cell(row=r, column=i, value=val)
-#         r += 1
-
-#     # Freeze header row across both blocks
-#     ws.freeze_panes = "A3"
-#     apply_borders(ws)
 
 
 def write_nid_issues(wb, nid_issues: list):
@@ -1250,121 +1207,6 @@ def write_nap_issues_sheet(wb, nap_mismatches, id_format_issues):
     apply_borders(ws)
 
 
-# def write_nap_issues_sheet(wb, nap_mismatches, id_format_issues):
-#     """
-#     NAP Issues sheet – same structure you had, with:
-#       • NEW: freeze header row at A2
-#       • Logging mirror restored for all sections
-#     """
-#     from openpyxl.styles import Font, Alignment
-#     from modules.simple_scripts.nap_rules import scan_nap_spec_warnings
-#     import logging, modules.config
-
-#     logger = logging.getLogger(__name__)
-#     ws = wb.create_sheet(title="NAP Issues")
-#     ws.freeze_panes = "A3"  # freeze header row
-
-#     bold = Font(bold=True)
-#     center = Alignment(horizontal='center')
-
-#     def _join_list(v):
-#         if v is None: return ""
-#         if isinstance(v, (list, tuple, set)): return ", ".join(str(x) for x in v)
-#         return str(v)
-
-#     # -------- A: NAP Mismatches (A–E) --------
-#     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=5)
-#     a_hdr = ws.cell(row=1, column=1, value="NAP Mismatches"); a_hdr.font = bold; a_hdr.alignment = center
-
-#     a_cols = ["NAP ID", "Loose Tube", "Missing Indices", "Missing Colors", "Issue"]
-#     for i, t in enumerate(a_cols, start=1):
-#         c = ws.cell(row=2, column=i, value=t); c.font = bold; c.alignment = center
-
-#     a_rows = []
-#     row = 3
-#     for rec in (nap_mismatches or []):
-#         if isinstance(rec, dict):
-#             nap = rec.get("nap") or rec.get("NAP ID") or ""
-#             loose = rec.get("loose_abbrev") or rec.get("Loose Tube") or ""
-#             miss_idx = rec.get("missing_indices") or rec.get("Missing Indices") or []
-#             miss_col = rec.get("missing_colors")  or rec.get("Missing Colors")  or []
-#         else:
-#             nap      = rec[0] if isinstance(rec, (list, tuple)) and len(rec) > 0 else ""
-#             loose    = rec[1] if isinstance(rec, (list, tuple)) and len(rec) > 1 else ""
-#             miss_idx = rec[2] if isinstance(rec, (list, tuple)) and len(rec) > 2 else []
-#             miss_col = rec[3] if isinstance(rec, (list, tuple)) and len(rec) > 3 else []
-#         vals = [nap, loose, _join_list(miss_idx), _join_list(miss_col), "Loose-tube color mismatch"]
-#         for c, v in enumerate(vals, start=1):
-#             ws.cell(row=row, column=c, value=v)
-#         a_rows.append(vals)
-#         row += 1
-    
-
-#     # -------- B: NAP Naming Issues (G–I) --------
-#     start_b = 7  # column G
-#     ws.merge_cells(start_row=1, start_column=start_b, end_row=1, end_column=start_b+2)
-#     b_hdr = ws.cell(row=1, column=start_b, value="NAP Naming Issues"); b_hdr.font = bold; b_hdr.alignment = center
-
-#     for i, t in enumerate(("NAP", "Vetro ID", "Issue"), start=start_b):
-#         c = ws.cell(row=2, column=i, value=t); c.font = bold; c.alignment = center
-
-#     b_rows = []
-#     row = 3
-#     for rec in (id_format_issues or []):
-#         if isinstance(rec, (list, tuple)):
-#             nap_id  = rec[0] if len(rec) > 0 else ""
-#             vetro_id = rec[1] if len(rec) > 1 else ""
-#         else:
-#             nap_id   = rec.get("nap_id") or rec.get("nap") or rec.get("NAP") or ""
-#             vetro_id = rec.get("vetro_id") or rec.get("Vetro ID") or ""
-#         vals = [nap_id, vetro_id, "NAP ID format issue"]
-#         for c, v in enumerate(vals, start=start_b):
-#             ws.cell(row=row, column=c, value=v)
-#         b_rows.append(vals)
-#         row += 1
-
-#     # -------- C: NAP Spec Warnings (K–O) --------
-#     start_c = 11  # column K
-#     ws.merge_cells(start_row=1, start_column=start_c, end_row=1, end_column=start_c+4)
-#     c_hdr = ws.cell(row=1, column=start_c, value="Warnings (NAP Specs)"); c_hdr.font = bold; c_hdr.alignment = center
-
-#     for i, t in enumerate(("NAP ID", "Field", "Value", "Hint", "Issue"), start=start_c):
-#         c = ws.cell(row=2, column=i, value=t); c.font = bold; c.alignment = center
-
-#     c_rows = []
-#     row = 3
-#     for rec in scan_nap_spec_warnings() or []:
-#         vals = [
-#             rec.get("NAP ID", "") or rec.get("nap_id", ""),
-#             rec.get("Field", "")  or rec.get("field", ""),
-#             rec.get("Value", "")  or rec.get("value", ""),
-#             rec.get("Hint", "")   or rec.get("hint", ""),
-#             "Spec warning",
-#         ]
-#         for c, v in enumerate(vals, start=start_c):
-#             ws.cell(row=row, column=c, value=v)
-#         c_rows.append(vals)
-#         row += 1
-
-#     # -------- Logging mirror (restored) --------
-#     if getattr(modules.config, "LOG_MIRROR_SHEETS", False) and getattr(modules.config, "LOG_NAP_SHEET_TO_LOG", False):
-#         logger.info("===== NAP Issues (Excel Mirror) =====")
-
-#         logger.info("[NAP Mismatches] " + " | ".join(a_cols))
-#         for r in a_rows:
-#             logger.error(" | ".join(str(v) if v is not None else "" for v in r))
-
-#         logger.info("[NAP Naming Issues] " + " | ".join(("NAP", "Vetro ID", "Issue")))
-#         for r in b_rows:
-#             logger.error(" | ".join(str(v) if v is not None else "" for v in r))
-
-#         logger.info("[Warnings (NAP Specs)] " + " | ".join(("NAP ID", "Field", "Value", "Hint", "Issue")))
-#         for r in c_rows:
-#             logger.error(" | ".join(str(v) if v is not None else "" for v in r))
-
-#         logger.info("===== End NAP Issues (Excel Mirror) =====")
-#     apply_borders(ws)
-
 def write_power_pole_issues_sheet(wb, issues: list[dict]):
     """
     Writes the 'Power Pole Issues' sheet for any bend ≥ threshold without anchor,
@@ -1474,93 +1316,6 @@ def write_conduit_sheet(wb, results: dict):
     apply_borders(ws)
 
 
-# def write_conduit_sheet(wb, results: dict):
-#     """
-#     Create a 'Conduit' worksheet with three side-by-side blocks:
-
-#       • Distribution Without Conduit               (left)
-#       • Conduits Without Distribution              (middle)
-#       • Conduit Type Issues                        (right)
-#     """
-#     from openpyxl.styles import Alignment, Font
-
-#     ws = wb.create_sheet(title='Conduit')
-#     ws.freeze_panes = 'A3'
-
-#     # Lists (default to [])
-#     df_missing   = results.get('df_missing_conduit', []) or []
-#     cd_missing   = results.get('conduit_missing_distribution', []) or []  # NEW
-#     type_issues  = results.get('type_issues', []) or []
-
-#     # --- Left block: Distributions without conduit
-#     left_title   = "Distribution Without Conduit"
-#     left_headers = ["Distribution ID", "Vetro ID", "Issue"]
-#     left_rows    = [
-#         [str(row.get("Distribution ID","")),
-#          str(row.get("Vetro ID","")),
-#          str(row.get("Issue",""))]
-#         for row in df_missing
-#     ]
-
-#     # --- Middle block: Conduits without distribution (NEW)
-#     mid_title    = "Conduits Without Distribution"
-#     mid_headers  = ["Conduit ID", "Conduit Vetro ID", "Issue"]
-#     mid_rows     = [
-#         [str(row.get("Conduit ID","")),
-#          str(row.get("Conduit Vetro ID","")),
-#          str(row.get("Issue",""))]
-#         for row in cd_missing
-#     ]
-
-#     # --- Right block: Conduit Type issues
-#     right_title   = "Conduit Type Issues"
-#     right_headers = ["Conduit ID", "Conduit Vetro ID", "Conduit Type", "Issue"]
-#     right_rows    = [
-#         [str(row.get("Conduit ID","")),
-#          str(row.get("Conduit Vetro ID","")),
-#          str(row.get("Conduit Type","")),
-#          str(row.get("Issue",""))]
-#         for row in type_issues
-#     ]
-
-#     # Side-by-side renderer
-#     TITLE_ROW, HEADERS_ROW, DATA_ROW, GAP_COLS = 1, 2, 3, 1
-#     blocks = [
-#         (left_title,  left_headers,  left_rows),
-#         (mid_title,   mid_headers,   mid_rows),
-#         (right_title, right_headers, right_rows),
-#     ]
-
-#     col_start = 1
-#     for (title, headers, rows) in blocks:
-#         # Title
-#         ws.merge_cells(
-#             start_row=TITLE_ROW, start_column=col_start,
-#             end_row=TITLE_ROW,   end_column=col_start + len(headers) - 1
-#         )
-#         th = ws.cell(row=TITLE_ROW, column=col_start, value=title)
-#         th.font = Font(bold=True)
-#         th.alignment = Alignment(horizontal="center")
-
-#         # Headers
-#         for i, h in enumerate(headers, start=col_start):
-#             hc = ws.cell(row=HEADERS_ROW, column=i, value=h)
-#             hc.font = Font(bold=True)
-#             hc.alignment = Alignment(horizontal="center")
-
-#         # Data rows
-#         r = DATA_ROW
-#         for row_vals in rows:
-#             for i, val in enumerate(row_vals, start=col_start):
-#                 ws.cell(row=r, column=i, value=val)
-#             r += 1
-
-#         # Next block with a 1-column gutter
-#         col_start += len(headers) + GAP_COLS
-
-#     apply_borders(ws)
-
-
 def write_vaults_sheet(wb, results: dict):
     """
     'Vaults' sheet — renders only the blocks that have rows:
@@ -1649,105 +1404,6 @@ def write_vaults_sheet(wb, results: dict):
         col += len(headers) + GAP
 
     apply_borders(ws)
-
-
-# def write_vaults_sheet(wb, results: dict):
-#     """
-#     Create a 'Vaults' worksheet laid out side-by-side:
-#       • Vaults Missing Conduit (left)
-#       • Vault Spacing > 500 ft (middle)
-#       • Sharp Bends Without Nearby Vault (<130°, >300 ft) (right)
-#     `results` is the dict returned by run_all_vault_checks().
-#     """
-#     from openpyxl.styles import Alignment, Font
-
-#     def _to_num(x):
-#         try:
-#             # Accept int/float or numeric strings; otherwise return original
-#             return float(x)
-#         except Exception:
-#             s = str(x).strip()
-#             try:
-#                 return float(s.replace(",", ""))
-#             except Exception:
-#                 return x
-
-#     ws = wb.create_sheet(title='Vaults')
-#     ws.freeze_panes = 'A3'  # lock titles (row 1) + headers (row 2)
-
-#     # Data
-#     missing = results.get('vaults_missing_conduit', []) or []
-#     spacing = results.get('vault_spacing_issues', []) or []
-#     bends   = results.get('bend_vault_issues', []) or []
-
-#     # Block definitions
-#     left_title   = "Vaults Missing Conduit"
-#     left_headers = ["Vault Vetro ID", "Issue"]
-#     left_rows = [
-#         [str(row.get("Vault Vetro ID","")), str(row.get("Issue",""))]
-#         for row in missing
-#     ]
-
-#     mid_title   = "Vault Spacing > 500 ft"
-#     mid_headers = ["Conduit ID", "Conduit Vetro ID", "From Vault", "To Vault", "Distance (ft)", "Limit (ft)", "Issue"]
-#     mid_rows = [[
-#         str(row.get("Conduit ID","")),
-#         str(row.get("Conduit Vetro ID","")),
-#         str(row.get("From Vault","")),
-#         str(row.get("To Vault","")),
-#         _to_num(row.get("Distance (ft)","")),
-#         _to_num(row.get("Limit (ft)","")),
-#         str(row.get("Issue","")),
-#     ] for row in spacing ]
-
-#     right_title   = "Sharp Bends Without Nearby Vault (<130°, >300 ft)"
-#     right_headers = ["Conduit ID", "Conduit Vetro ID", "Bend Angle (deg)", "Nearest Vault", "Distance (ft)", "Limit (ft)", "Issue"]
-#     right_rows = [[
-#         str(row.get("Conduit ID","")),
-#         str(row.get("Conduit Vetro ID","")),
-#         _to_num(row.get("Bend Angle (deg)","")),
-#         str(row.get("Nearest Vault","")),
-#         _to_num(row.get("Distance (ft)","")),
-#         _to_num(row.get("Limit (ft)","")),
-#         str(row.get("Issue","")),
-#     ] for row in bends ]
-
-#     # Layout (side-by-side)
-#     TITLE_ROW    = 1
-#     HEADERS_ROW  = 2
-#     DATA_ROW     = 3
-#     GAP_COLS     = 1  # one blank column between blocks
-
-#     LEFT_COL_START  = 1
-#     MID_COL_START   = LEFT_COL_START + len(left_headers) + GAP_COLS
-#     RIGHT_COL_START = MID_COL_START + len(mid_headers) + GAP_COLS
-
-#     def draw_block(title, headers, rows, col_start):
-#         # Title
-#         ws.merge_cells(start_row=TITLE_ROW, start_column=col_start,
-#                        end_row=TITLE_ROW, end_column=col_start + len(headers) - 1)
-#         th = ws.cell(row=TITLE_ROW, column=col_start, value=title)
-#         th.font = Font(bold=True)
-#         th.alignment = Alignment(horizontal="center")
-
-#         # Headers
-#         for i, h in enumerate(headers, start=col_start):
-#             hc = ws.cell(row=HEADERS_ROW, column=i, value=h)
-#             hc.font = Font(bold=True)
-#             hc.alignment = Alignment(horizontal="center")
-
-#         # Rows
-#         r = DATA_ROW
-#         for row_vals in rows:
-#             for i, val in enumerate(row_vals, start=col_start):
-#                 ws.cell(row=r, column=i, value=val)
-#             r += 1
-
-#     # Draw all three blocks on the same rows
-#     draw_block(left_title,  left_headers,  left_rows,  LEFT_COL_START)
-#     draw_block(mid_title,   mid_headers,   mid_rows,   MID_COL_START)
-#     draw_block(right_title, right_headers, right_rows, RIGHT_COL_START)
-#     apply_borders(ws)
 
 
 # --- borders helper ---
