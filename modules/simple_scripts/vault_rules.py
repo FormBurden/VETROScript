@@ -132,28 +132,118 @@ def _angle_diff(a: float, b: float) -> float:
 # ---------------------------------
 # A) Vault must sit on conduit
 # ---------------------------------
-def find_vaults_missing_conduit() -> List[dict]:
+
+def find_vaults_missing_conduit(tolerance_ft: float | None = None) -> List[dict]:
     """
-    Every vault coordinate must have conduit on it.
+    Every vault coordinate must have conduit *under it*.
+
+    Now checks distance to the nearest *segment* (not only conduit vertices).
 
     Returns rows:
-      { "Vault Vetro ID": <vetro_id>, "Issue": "No Conduit at vault" }
+      { "Vault Vetro ID": <str>, "Issue": "No Conduit at vault" }
     """
-    conduits = _load_conduits()
-    conduit_vertices = _collect_conduit_vertices(conduits)
+    from math import cos, radians, sqrt
 
+    conduits = _load_conduits()
     vault_coords, vault_map = load_features("vault", "vetro_id")
+
+    # Allow an override, else fall back to the global threshold (~3 ft).
+    M_TO_FT = 3.28084
+    tol_m = (float(tolerance_ft) / M_TO_FT) if tolerance_ft is not None else THRESHOLD_M
+
+    def _ptseg_distance_m(
+        p: Tuple[float, float],
+        a: Tuple[float, float],
+        b: Tuple[float, float],
+    ) -> float:
+        """
+        Approximate point-to-segment distance in meters by projecting to a local
+        equirectangular plane (very accurate at these small tolerances).
+        """
+        plat, plon = p
+        alat, alon = a
+        blat, blon = b
+
+        lat0 = (plat + alat + blat) / 3.0
+        m_per_deg_lat = 111320.0
+        m_per_deg_lon = 111320.0 * cos(radians(lat0))
+
+        # project to a flat plane around this latitude
+        ax, ay = alon * m_per_deg_lon, alat * m_per_deg_lat
+        bx, by = blon * m_per_deg_lon, blat * m_per_deg_lat
+        px, py = plon * m_per_deg_lon, plat * m_per_deg_lat
+
+        vx, vy = (bx - ax), (by - ay)
+        wx, wy = (px - ax), (py - ay)
+
+        denom = (vx * vx + vy * vy)
+        if denom <= 0.0:
+            # a and b are the same point; distance to that point
+            dx, dy = (px - ax), (py - ay)
+            return sqrt(dx * dx + dy * dy)
+
+        # projection parameter t clamped to [0,1]
+        t = (wx * vx + wy * vy) / denom
+        if t < 0.0:
+            cx, cy = ax, ay
+        elif t > 1.0:
+            cx, cy = bx, by
+        else:
+            cx, cy = (ax + t * vx), (ay + t * vy)
+
+        dx, dy = (px - cx), (py - cy)
+        return sqrt(dx * dx + dy * dy)
+
     out: List[dict] = []
-    for (lat, lon) in vault_coords:
-        # touch if within THRESHOLD_M of any conduit vertex
-        has_touch = any(haversine(lat, lon, clat, clon) <= THRESHOLD_M
-                        for (clat, clon) in conduit_vertices)
-        if not has_touch:
+    for (vlat, vlon) in vault_coords:
+        on_conduit = False
+
+        # Early-exit as soon as any segment is within tolerance
+        for c in conduits:
+            for seg in c.get("segments", []):
+                if len(seg) < 2:
+                    continue
+                # walk segment edges
+                for i in range(1, len(seg)):
+                    if _ptseg_distance_m((vlat, vlon), seg[i - 1], seg[i]) <= tol_m:
+                        on_conduit = True
+                        break
+                if on_conduit:
+                    break
+            if on_conduit:
+                break
+
+        if not on_conduit:
             out.append({
-                "Vault Vetro ID": vault_map.get((round(lat, 6), round(lon, 6)), ""),
+                "Vault Vetro ID": vault_map.get((round(vlat, 6), round(vlon, 6)), ""),
                 "Issue": "No Conduit at vault",
             })
+
     return out
+
+
+# def find_vaults_missing_conduit() -> List[dict]:
+#     """
+#     Every vault coordinate must have conduit on it.
+
+#     Returns rows:
+#       { "Vault Vetro ID": <vetro_id>, "Issue": "No Conduit at vault" }
+#     """
+#     conduits = _load_conduits()
+#     conduit_vertices = _collect_conduit_vertices(conduits)
+
+#     vault_coords, vault_map = load_features("vault", "vetro_id")
+#     out: List[dict] = []
+#     for (lat, lon) in vault_coords:
+#         # touch if within THRESHOLD_M of any conduit vertex
+#         has_touch = any(haversine(lat, lon, clat, clon) <= THRESHOLD_M
+#                         for (clat, clon) in conduit_vertices)
+#         if not has_touch:
+#             out.append({
+#                 "Vault Vetro ID": vault_map.get((round(lat, 6), round(lon, 6)), ""),
+#                 "Issue": "No Conduit at vault",
+#             })
+#     return out
 
 
 # ---------------------------------------------------------
