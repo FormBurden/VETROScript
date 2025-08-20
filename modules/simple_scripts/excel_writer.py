@@ -666,16 +666,13 @@ def write_slack_loop_issues_sheet(wb, sd_issues, ug_issues, aerial_issues=None, 
         blocks.append({
             "title": "Distribution End Tail Issues",
             "headers": [
-                "Slack Loop ID",
-                "Type",
-                "Slack Loop",
-                "Expected Slack Loop",
+                "Slack Loop ID", "Type", "Slack Loop", "Expected Slack Loop", "Issue",
             ],
             "rows": [
-                [ _join(vid), _join(kind), _join(lbl), _join(exp) ]
-                for (vid, kind, lbl, exp) in (tail_issues or [])
+                [_join(vid), _join(kind), _join(lbl), _join(exp), _join(issue)]
+                for (vid, kind, lbl, exp, issue) in (tail_issues or [])
             ],
-            "width": 4,
+            "width": 5,
         })
 
     # If nothing to show and not SHOW_ALL_SHEETS, still draw a single empty block to keep the sheet.
