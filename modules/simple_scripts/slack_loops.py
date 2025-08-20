@@ -73,26 +73,58 @@ def find_slack_dist_mismatches():
     return mismatches
 
 
+# modules/simple_scripts/slack_loops.py
+
 def _load_slack_loops_with_labels_and_coords():
     """
     Return list of (lat, lon, slack_vid, fiber_label, slack_loop_label).
+
+    NOTE: Do NOT require 'Fiber Label' to exist; Tail-End logic only needs
+    the Slack Loop label and the feature's vetro_id.
     """
     out = []
     for fn in glob.glob(f'{modules.config.DATA_DIR}/*slack-loop*.geojson'):
         with open(fn, encoding='utf-8') as f:
             gj = json.load(f)
         for feat in gj.get('features', []):
-            props     = feat.get('properties', {})
+            props = feat.get('properties', {}) or {}
             slack_vid = props.get('vetro_id')
-            fl        = props.get('Fiber Label')
-            sl        = props.get('Slack Loop')
-            geom      = feat.get('geometry', {})
-            coords    = geom.get('coordinates', [])
-            if not slack_vid or not fl or len(coords) < 2:
+            geom = feat.get('geometry', {}) or {}
+            coords = geom.get('coordinates', []) or []
+
+            # Keep if it has an ID and valid coords; don't require Fiber Label.
+            if not slack_vid or len(coords) < 2:
                 continue
+
+            # Normalize to strings (empty when missing) for downstream use.
+            fl = (props.get('Fiber Label') or '').strip()
+            sl = (props.get('Slack Loop') or '').strip()
+
             lon, lat = coords[0], coords[1]
             out.append((lat, lon, slack_vid, fl, sl))
     return out
+
+
+# def _load_slack_loops_with_labels_and_coords():
+#     """
+#     Return list of (lat, lon, slack_vid, fiber_label, slack_loop_label).
+#     """
+#     out = []
+#     for fn in glob.glob(f'{modules.config.DATA_DIR}/*slack-loop*.geojson'):
+#         with open(fn, encoding='utf-8') as f:
+#             gj = json.load(f)
+#         for feat in gj.get('features', []):
+#             props     = feat.get('properties', {})
+#             slack_vid = props.get('vetro_id')
+#             fl        = props.get('Fiber Label')
+#             sl        = props.get('Slack Loop')
+#             geom      = feat.get('geometry', {})
+#             coords    = geom.get('coordinates', [])
+#             if not slack_vid or not fl or len(coords) < 2:
+#                 continue
+#             lon, lat = coords[0], coords[1]
+#             out.append((lat, lon, slack_vid, fl, sl))
+#     return out
 
 def find_underground_slack_mismatches(nap_coords, vault_coords, vault_map):
     """
