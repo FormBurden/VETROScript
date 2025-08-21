@@ -236,33 +236,6 @@ def find_distributions_without_conduit(tolerance_ft: float | None = None) -> Lis
     return out
 
 
-# def find_distributions_without_conduit() -> List[dict]:
-#     """
-#     For each underground Distribution, require at least one conduit vertex within THRESHOLD_M
-#     of any vertex of the distribution geometry. If none, flag it.
-#     """
-#     conduits = _load_conduits()
-#     conduit_vertices = _collect_conduit_vertices(conduits)
-
-#     out: List[dict] = []
-#     for df in _load_underground_distributions_full():
-#         has_touch = False
-#         for seg in df["segments"]:
-#             for lat, lon in seg:
-#                 if any(haversine(lat, lon, clat, clon) <= THRESHOLD_M
-#                        for (clat, clon) in conduit_vertices):
-#                     has_touch = True
-#                     break
-#             if has_touch:
-#                 break
-#         if not has_touch:
-#             out.append({
-#                 "Distribution ID": df.get("id", ""),
-#                 "Vetro ID": df.get("vetro_id", ""),
-#                 "Issue": "No Conduit under distribution",
-#             })
-#     return out
-
 # ------------------------------------------------------
 # Rule: Conduit Type must be one of the allowed values
 # ------------------------------------------------------
