@@ -8,7 +8,7 @@ import re
 import modules.config
 from modules.basic.distance_utils import haversine, THRESHOLD_M
 from modules.basic.fiber_colors import FIBER_COLORS
-from modules.basic.log_configs import log_issue_header
+from modules.basic.log_configs import log_issue_header, format_table_lines
 
 logger = logging.getLogger(__name__)
 
@@ -251,8 +251,7 @@ def find_color_mismatches(emit_info: bool = True) -> list[str]:
     [Drop Issues] Color mismatches — same deep-walk ordering as svc-attr checks.
 
     Emits:
-      • Top section (if LOG_DETAIL == "INFO" and emit_info=True):
-          one line per SL: ✅ or ❌
+      • Top section (if LOG_DETAIL == "INFO" and emit_info=True): one line per SL: ✅ or ❌
       • Bottom recap (errors-only) with header and end-header *only when emit_info=True*:
           lines start with: "[Drop Issues] ❌ SL #"
 
@@ -268,18 +267,18 @@ def find_color_mismatches(emit_info: bool = True) -> list[str]:
         # 1–Blue, 2–Orange, 3–Green, 4–Brown, 5–Slate, 6–White,
         # 7–Red, 8–Black, 9–Yellow, 10–Violet, 11–Rose, 12–Aqua
         mapping = {
-            "blue":   "🟦",
-            "orange": "🟧",
-            "green":  "🟩",
-            "brown":  "🟫",
-            "slate":  "◼️",   # dark gray (distinct from pure black)
-            "white":  "⬜",
-            "red":    "🟥",
-            "black":  "⬛",
-            "yellow": "🟨",
-            "violet": "🟪",
-            "rose":   "🩷",   # pink heart (closest portable pink)
-            "aqua":   "💧",   # blue diamond to differentiate from Blue
+            "blue": "",
+            "orange": "",
+            "green": "",
+            "brown": "",
+            "slate": "◾️",  # dark gray (distinct from pure black)
+            "white": "⬜",
+            "red": "",
+            "black": "⬛",
+            "yellow": "",
+            "violet": "",
+            "rose": "",      # pink heart (closest portable pink)
+            "aqua": "",      # blue diamond to differentiate from Blue
         }
         return mapping.get(n, name or "")
 
@@ -304,10 +303,9 @@ def find_color_mismatches(emit_info: bool = True) -> list[str]:
     do_debug  = bool(getattr(modules.config, "LOG_DROP_DEBUG", False))
     show_path = bool(getattr(modules.config, "LOG_INCLUDE_WALK_PATH", False))
 
-    service_raw = load_service_locations()   # [((lat, lon), splice_raw, sid)]
-    drops_map   = load_fiber_drops()         # {(lat, lon): '2 - Orange', ...}
-
-    order_map = get_walk_order_index_map()
+    service_raw = load_service_locations()  # [((lat, lon), splice_raw, sid)]
+    drops_map   = load_fiber_drops()        # {(lat, lon): '2 - Orange', ...}
+    order_map   = get_walk_order_index_map()
 
     def _nap_for_sid(sid: str) -> str:
         from_path = _extract_nap_id_from_path(_paths.get(sid, ""))
@@ -329,7 +327,9 @@ def find_color_mismatches(emit_info: bool = True) -> list[str]:
         logger.info("==== [Drop Issues] Color Mismatches (svc-attr ordering) ====")
 
     mismatches: list[str] = []
-    recap_rows: list[tuple[str, str, str, str]] = []  # (sl_num, sid, drop_c, splice_txt [and path optionally])
+    # (sl_num, sid, drop_display, splice_txt [and optionally path appended])
+    recap_rows: list[tuple[str, str, str, str]] = []
+
     next_ordinal = (max(order_map.values()) if order_map else 0) + 1
 
     for (pt, raw_splice, sid) in rows_sorted:
@@ -342,11 +342,10 @@ def find_color_mismatches(emit_info: bool = True) -> list[str]:
         raw_drop = str(drops_map.get(pt, "")).strip()
         drop_c = _normalize_color(raw_drop)  # e.g., '2 - Orange' -> 'Orange'
         splice_colors = _normalize_splice_to_colors(raw_splice)  # {'Orange', ...}
-
         is_match = bool(drop_c) and (drop_c in splice_colors)
 
         # --- decorate for logging (emoji if enabled) ---
-        drop_disp = _decorate_color(drop_c) if drop_c else "(none)"
+        drop_disp  = _decorate_color(drop_c) if drop_c else "(none)"
         splice_txt = "[" + ", ".join(_decorate_color(c) for c in sorted(splice_colors)) + "]"
 
         path_part = ""
@@ -367,39 +366,40 @@ def find_color_mismatches(emit_info: bool = True) -> list[str]:
         if not is_match:
             mismatches.append(sid)
             if show_path and _paths.get(sid):
-                recap_rows.append((str(sl_num), sid, (drop_disp), f"{splice_txt} | {_paths[sid]}"))
+                recap_rows.append((str(sl_num), sid, drop_disp, f"{splice_txt} | {_paths[sid]}"))
             else:
-                recap_rows.append((str(sl_num), sid, (drop_disp), splice_txt))
+                recap_rows.append((str(sl_num), sid, drop_disp, splice_txt))
 
     if do_info:
         logger.info("==== End [Drop Issues] Color Mismatches (svc-attr ordering) ====")
 
     # Errors-only recap at the bottom of [Drop Issues] — gated by emit_info so stats pass won't duplicate it
     if emit_info and recap_rows:
-        # Header
+        logger.info("===== Drop Issues (%d) =====", len(recap_rows))
+
+        # Build a proper table (header centered; blank Path cell when not present).
         if show_path:
-            logger.info("===== Drop Issues (%d) =====", len(recap_rows))
-            logger.error("[Drop Issues] ❌ SL # | Service Location ID | Drop Color | SL Colors | Path")
+            headers = ["❌ SL #", "Service Location ID", "Drop Color", "SL Colors", "Path"]
+            table_rows = []
+            for sl_num, sid, dcol, sps in recap_rows:
+                if " | " in sps:
+                    sp, path = sps.split(" | ", 1)
+                else:
+                    sp, path = sps, ""
+                table_rows.append([sl_num, sid, dcol, sp, path])
         else:
-            logger.info("===== Drop Issues (%d) =====", len(recap_rows))
-            logger.error("[Drop Issues] ❌ SL # | Service Location ID | Drop Color | SL Colors")
+            headers = ["❌ SL #", "Service Location ID", "Drop Color", "SL Colors"]
+            table_rows = [[sl_num, sid, dcol, sps] for (sl_num, sid, dcol, sps) in recap_rows]
 
-        # Rows
-        for sl_num, sid, dcol, sps in recap_rows:
-            if show_path and " | " in sps:
-                # sps already includes " | Path"
-                logger.error("[Drop Issues] ❌ SL # %s: %s | %s | %s", sl_num, sid, dcol, sps)
-            else:
-                logger.error("[Drop Issues] ❌ SL # %s: %s | %s | %s", sl_num, sid, dcol, sps)
+        for line in format_table_lines(headers, table_rows, center_headers=True):
+            logger.error(f"[Drop Issues] {line}")
 
-        # Footer
         logger.info("===== End Drop Issues =====")
 
     if do_debug:
         logger.debug(f"• [Drop] Color-mismatch count: {len(mismatches)}")
 
     return mismatches
-
 
 
 # def find_color_mismatches(emit_info: bool = True) -> list[str]:
@@ -416,6 +416,36 @@ def find_color_mismatches(emit_info: bool = True) -> list[str]:
 #       list[str]: Service Location IDs where the drop color is not present in the
 #                  Service Location's Splice Colors.
 #     """
+#     # --- local helpers: emoji decoration (no external deps) ---
+#     def _emoji_for_color(name: str) -> str:
+#         """Map canonical fiber color names to emojis."""
+#         n = (name or "").strip().lower()
+#         # Canonical order reference:
+#         # 1–Blue, 2–Orange, 3–Green, 4–Brown, 5–Slate, 6–White,
+#         # 7–Red, 8–Black, 9–Yellow, 10–Violet, 11–Rose, 12–Aqua
+#         mapping = {
+#             "blue":   "🟦",
+#             "orange": "🟧",
+#             "green":  "🟩",
+#             "brown":  "🟫",
+#             "slate":  "◼️",   # dark gray (distinct from pure black)
+#             "white":  "⬜",
+#             "red":    "🟥",
+#             "black":  "⬛",
+#             "yellow": "🟨",
+#             "violet": "🟪",
+#             "rose":   "🩷",   # pink heart (closest portable pink)
+#             "aqua":   "💧",   # blue diamond to differentiate from Blue
+#         }
+#         return mapping.get(n, name or "")
+
+#     def _decorate_color(name: str) -> str:
+#         """Return emoji for color when LOG_COLOR_MODE='EMOJI', else the plain name."""
+#         mode = str(getattr(modules.config, "LOG_COLOR_MODE", "OFF")).upper()
+#         if mode == "EMOJI":
+#             return _emoji_for_color(name)
+#         return name
+
 #     from modules.hard_scripts.distribution_walker import get_walk_order_index_map
 #     try:
 #         from modules.hard_scripts.distribution_walker import get_walk_paths_map
@@ -471,7 +501,10 @@ def find_color_mismatches(emit_info: bool = True) -> list[str]:
 
 #         is_match = bool(drop_c) and (drop_c in splice_colors)
 
-#         splice_txt = "[" + ", ".join(sorted(splice_colors)) + "]"
+#         # --- decorate for logging (emoji if enabled) ---
+#         drop_disp = _decorate_color(drop_c) if drop_c else "(none)"
+#         splice_txt = "[" + ", ".join(_decorate_color(c) for c in sorted(splice_colors)) + "]"
+
 #         path_part = ""
 #         if show_path and _paths.get(sid):
 #             path_part = f" — path={_paths[sid]}"
@@ -483,16 +516,16 @@ def find_color_mismatches(emit_info: bool = True) -> list[str]:
 
 #         if do_info:
 #             if is_match:
-#                 logger.info(f"[Drop Issues] ✅ SL # {sl_num}: {sid} — drop={drop_c}; splice={splice_txt}{path_part}")
+#                 logger.info(f"[Drop Issues] ✅ SL # {sl_num}: {sid} — drop={drop_disp}; splice={splice_txt}{path_part}")
 #             else:
-#                 logger.error(f"[Drop Issues] ❌ SL # {sl_num}: {sid} — drop={drop_c or '(none)'} not in {splice_txt}{path_part}")
+#                 logger.error(f"[Drop Issues] ❌ SL # {sl_num}: {sid} — drop={drop_disp} not in {splice_txt}{path_part}")
 
 #         if not is_match:
 #             mismatches.append(sid)
 #             if show_path and _paths.get(sid):
-#                 recap_rows.append((str(sl_num), sid, (drop_c or "(none)"), f"{splice_txt} | {_paths[sid]}"))
+#                 recap_rows.append((str(sl_num), sid, (drop_disp), f"{splice_txt} | {_paths[sid]}"))
 #             else:
-#                 recap_rows.append((str(sl_num), sid, (drop_c or "(none)"), splice_txt))
+#                 recap_rows.append((str(sl_num), sid, (drop_disp), splice_txt))
 
 #     if do_info:
 #         logger.info("==== End [Drop Issues] Color Mismatches (svc-attr ordering) ====")

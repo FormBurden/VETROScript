@@ -58,14 +58,20 @@ def log_issue_header(title: str, lines: list[str], logger: logging.Logger | None
         emit(ln if ln is not None else "")
     emit(f"==== End {title} ====")
 
-def format_table_lines(headers: list[str], rows: list[list[str]], sep: str = " | ", max_col_widths: list[int] | None = None) -> list[str]:
+
+def format_table_lines(
+    headers: list[str],
+    rows: list[list[str]],
+    sep: str = " | ",
+    max_col_widths: list[int] | None = None,
+    center_headers: bool = True,
+) -> list[str]:
     """
     Return aligned text lines for a simple table:
-      • headers: column titles
-      • rows:    list of rows, each a list of strings
-      • sep:     column separator
+      • headers: column titles (centered when center_headers=True)
+      • rows: list of rows, each a list of strings (left-aligned)
+      • sep: column separator
       • max_col_widths: optional per-column max widths (truncate with …)
-
     This strips ANSI before measuring width so things align in the file log.
     """
     import re
@@ -77,11 +83,13 @@ def format_table_lines(headers: list[str], rows: list[list[str]], sep: str = " |
     cols = len(headers)
     widths = [vis_len(h) for h in headers]
 
+    # Expand widths to fit data as well (so short cells pad to header width).
     for row in rows:
         for i in range(cols):
             cell = row[i] if i < len(row) else ""
             widths[i] = max(widths[i], vis_len(cell))
 
+    # Apply optional max widths per column.
     if max_col_widths:
         widths = [
             min(widths[i], max_col_widths[i]) if i < len(max_col_widths) and max_col_widths[i] else widths[i]
@@ -89,7 +97,7 @@ def format_table_lines(headers: list[str], rows: list[list[str]], sep: str = " |
         ]
 
     def fit(cell: str, w: int) -> str:
-        # pad or truncate with ellipsis; measure width on ANSI-stripped text
+        """Left-align, pad or truncate with ellipsis; measure on ANSI-stripped text."""
         raw = ansi_re.sub("", str(cell))
         if len(raw) <= w:
             return raw + (" " * (w - len(raw)))
@@ -99,9 +107,76 @@ def format_table_lines(headers: list[str], rows: list[list[str]], sep: str = " |
         keep = max(0, w - len(ell))
         return (raw[:keep] + ell) if keep else ell
 
+    def fit_center(cell: str, w: int) -> str:
+        """Center-align within width w using spaces; truncate with ellipsis if needed."""
+        raw = ansi_re.sub("", str(cell))
+        if len(raw) <= w:
+            total_pad = w - len(raw)
+            left = total_pad // 2
+            right = total_pad - left
+            return (" " * left) + raw + (" " * right)
+        # too long → truncate then no extra centering beyond truncation
+        return fit(raw, w)
+
     lines: list[str] = []
-    lines.append(sep.join(fit(h, widths[i]) for i, h in enumerate(headers)))
+    # Header (centered unless disabled)
+    if center_headers:
+        lines.append(sep.join(fit_center(h, widths[i]) for i, h in enumerate(headers)))
+    else:
+        lines.append(sep.join(fit(h, widths[i]) for i, h in enumerate(headers)))
+
+    # Data rows (left-aligned)
     for row in rows:
         line = sep.join(fit(row[i] if i < len(row) else "", widths[i]) for i in range(cols))
         lines.append(line)
+
     return lines
+
+
+# def format_table_lines(headers: list[str], rows: list[list[str]], sep: str = " | ", max_col_widths: list[int] | None = None) -> list[str]:
+#     """
+#     Return aligned text lines for a simple table:
+#       • headers: column titles
+#       • rows:    list of rows, each a list of strings
+#       • sep:     column separator
+#       • max_col_widths: optional per-column max widths (truncate with …)
+
+#     This strips ANSI before measuring width so things align in the file log.
+#     """
+#     import re
+#     ansi_re = re.compile(r"\x1b\[[0-9;]*m")
+
+#     def vis_len(s: str) -> int:
+#         return len(ansi_re.sub("", str(s)))
+
+#     cols = len(headers)
+#     widths = [vis_len(h) for h in headers]
+
+#     for row in rows:
+#         for i in range(cols):
+#             cell = row[i] if i < len(row) else ""
+#             widths[i] = max(widths[i], vis_len(cell))
+
+#     if max_col_widths:
+#         widths = [
+#             min(widths[i], max_col_widths[i]) if i < len(max_col_widths) and max_col_widths[i] else widths[i]
+#             for i in range(cols)
+#         ]
+
+#     def fit(cell: str, w: int) -> str:
+#         # pad or truncate with ellipsis; measure width on ANSI-stripped text
+#         raw = ansi_re.sub("", str(cell))
+#         if len(raw) <= w:
+#             return raw + (" " * (w - len(raw)))
+#         if w <= 0:
+#             return ""
+#         ell = "…"
+#         keep = max(0, w - len(ell))
+#         return (raw[:keep] + ell) if keep else ell
+
+#     lines: list[str] = []
+#     lines.append(sep.join(fit(h, widths[i]) for i, h in enumerate(headers)))
+#     for row in rows:
+#         line = sep.join(fit(row[i] if i < len(row) else "", widths[i]) for i in range(cols))
+#         lines.append(line)
+#     return lines
