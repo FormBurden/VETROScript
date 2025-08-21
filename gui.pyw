@@ -374,7 +374,7 @@ class PeerCheckGUI(tk.Tk):
         # --- Data Folder ---
         row = 0
         ttk.Label(self, text="Data Folder").grid(row=row, column=0, sticky="w", **pad)
-        # Prefill Data from prefs stored in <Output>/user_prefs.json; fallback to modules.config.DATA_DIR
+        # Prefill Data from prefs stored in /user_prefs.json; fallback to modules.config.DATA_DIR
         last_data = modules.config.get_last_dir("data", default=str(getattr(modules.config, "DATA_DIR", "")))
         self.data_dir_var = tk.StringVar(value=last_data)
         self.data_dir_entry = ttk.Entry(self, textvariable=self.data_dir_var, width=70)
@@ -407,18 +407,34 @@ class PeerCheckGUI(tk.Tk):
 
         right_group = ttk.Frame(btn_frame)
         right_group.grid(row=0, column=2, sticky="e")
+
         self.logs_help = ttk.Label(right_group, text="(?)", style="Help.TLabel", cursor="question_arrow")
         self.logs_help.grid(row=0, column=0, sticky="e", padx=(0, 6))
-        self.include_logs_var = tk.BooleanVar(value=bool(getattr(modules.config, "WRITE_LOG_FILE", True)))
-        self.logs_ck = ttk.Checkbutton(right_group, text="Logs", variable=self.include_logs_var)
+
+        # --- CHANGED: initialize Logs checkbox from user_prefs.json, persist on toggle ---
+        # Load saved preference if any; otherwise fall back to modules.config default
+        _saved_logs = modules.config.get_pref("include_logs", None)
+        _initial_logs = bool(_saved_logs) if _saved_logs is not None else bool(getattr(modules.config, "WRITE_LOG_FILE", True))
+        self.include_logs_var = tk.BooleanVar(value=_initial_logs)
+
+        # Keep runtime config in sync immediately
+        modules.config.WRITE_LOG_FILE = bool(self.include_logs_var.get())
+
+        self.logs_ck = ttk.Checkbutton(
+            right_group,
+            text="Logs",
+            variable=self.include_logs_var,
+            command=self._on_toggle_logs,              # <-- persist when toggled
+        )
         self.logs_ck.grid(row=0, column=1, sticky="e")
 
         HoverTooltip(
             self.logs_help,
             text=(
-                "When checked, a separate log file is created. This log shows the exact path of each error "
-                "found in the Excel document, as well as how the script aggregates the data—useful for verifying "
-                "that it’s working correctly. You can customize what details appear in the logs by adjusting the settings."
+                "When checked, a separate log file is created. "
+                "This log shows the exact path of each error found in the Excel document, "
+                "as well as how the script aggregates the data—useful for verifying that it’s working correctly. "
+                "You can customize what details appear in the logs by adjusting the settings."
             ),
             wraplength_px=360
         )
@@ -430,6 +446,7 @@ class PeerCheckGUI(tk.Tk):
         row += 1
         self.status_var = tk.StringVar(value="Ready.")
         ttk.Label(self, textvariable=self.status_var).grid(row=row, column=0, columnspan=3, sticky="w", **pad)
+
 
     # gui.pyw — early in app startup (e.g., end of PeerCheckGUI.__init__)
     def _apply_settings_from_prefs_on_startup():
@@ -463,6 +480,14 @@ class PeerCheckGUI(tk.Tk):
             modules.config.set_bootstrap_last_output_dir(path)
             # Also store this choice inside <Output>/user_prefs.json
             modules.config.update_last_dir("output", path)
+
+    def _on_toggle_logs(self):
+        """
+        Persist the Logs checkbox to <Output>/user_prefs.json and sync runtime config.
+        """
+        val = bool(self.include_logs_var.get())
+        modules.config.WRITE_LOG_FILE = val
+        modules.config.set_pref("include_logs", val)
 
 
     def _browse_data_dir(self):
@@ -509,6 +534,7 @@ class PeerCheckGUI(tk.Tk):
             self.status_var.set("Running…")
             self.update_idletasks()
             modules.config.WRITE_LOG_FILE = bool(self.include_logs_var.get())
+            modules.config.set_pref("include_logs", modules.config.WRITE_LOG_FILE)
             run_main(data_dir, out_dir)
             self.status_var.set("Done.")
             messagebox.showinfo("Success", f"Checks complete!\nSaved to {out_dir}")
