@@ -224,23 +224,68 @@ def find_vaults_missing_conduit(tolerance_ft: float | None = None) -> List[dict]
 
 def find_vault_spacing_issues(max_gap_ft: float = 500.0) -> List[dict]:
     """
-    Walk each conduit polyline; project touching vaults to closest vertices; compute along-run
-    distances between consecutive vaults; flag when gap > max_gap_ft. If a run has <2 vaults and
-    its total length > max_gap_ft, flag the run.
+    Walk each conduit polyline; project touching vaults to the *nearest segment*
+    (not just the nearest vertex); compute along-run distances between consecutive
+    vaults; flag when the gap > max_gap_ft.
+
+    If a run has <2 vaults and its total length > max_gap_ft, flag the entire run.
 
     Returns rows:
       {
-        "Conduit ID": <id>,
-        "Conduit Vetro ID": <vetro_id>,
-        "From Vault": <vetro_id or "(start)">,
-        "To Vault": <vetro_id or "(end)">,
-        "Distance (ft)": <float>,
-        "Limit (ft)": <max_gap_ft>,
+        "Conduit ID": ,
+        "Conduit Vetro ID": ,
+        "From Vault": ,
+        "To Vault": ,
+        "Distance (ft)": ,
+        "Limit (ft)": ,
         "Issue": "Vault spacing exceeds 500 ft"
       }
     """
-    vault_coords, vault_map = load_features("vault", "vetro_id")
+    from math import cos, radians, sqrt
 
+    def _ptseg_distance_and_t_m(
+        p: Tuple[float, float],
+        a: Tuple[float, float],
+        b: Tuple[float, float],
+    ) -> Tuple[float, float]:
+        """
+        Point-to-segment perpendicular distance (meters) and the clamped
+        projection parameter t in [0,1] using a local equirectangular plane.
+        """
+        plat, plon = p
+        alat, alon = a
+        blat, blon = b
+
+        lat0 = (plat + alat + blat) / 3.0
+        m_per_deg_lat = 111320.0
+        m_per_deg_lon = 111320.0 * cos(radians(lat0))
+
+        ax, ay = alon * m_per_deg_lon, alat * m_per_deg_lat
+        bx, by = blon * m_per_deg_lon, blat * m_per_deg_lat
+        px, py = plon * m_per_deg_lon, plat * m_per_deg_lat
+
+        vx, vy = (bx - ax), (by - ay)
+        wx, wy = (px - ax), (py - ay)
+        denom = (vx * vx + vy * vy)
+        if denom <= 0.0:
+            # a and b coincide – distance to that point, t=0
+            dx, dy = (px - ax), (py - ay)
+            return sqrt(dx * dx + dy * dy), 0.0
+
+        t = (wx * vx + wy * vy) / denom
+        if t < 0.0:
+            cx, cy = ax, ay
+            t = 0.0
+        elif t > 1.0:
+            cx, cy = bx, by
+            t = 1.0
+        else:
+            cx, cy = (ax + t * vx), (ay + t * vy)
+
+        dx, dy = (px - cx), (py - cy)
+        return sqrt(dx * dx + dy * dy), t
+
+    vault_coords, vault_map = load_features("vault", "vetro_id")
     out: List[dict] = []
     lim_m = float(max_gap_ft) / M_TO_FT
 
@@ -249,16 +294,38 @@ def find_vault_spacing_issues(max_gap_ft: float = 500.0) -> List[dict]:
             if not seg or len(seg) < 2:
                 continue
 
-            # collect vaults that touch this segment (by nearest-vertex proximity)
-            touching: List[tuple[int, str]] = []
+            # Precompute cumulative along-run vertex distances (meters)
+            cum: List[float] = [0.0]
+            for i in range(1, len(seg)):
+                a, b = seg[i - 1], seg[i]
+                cum.append(cum[-1] + haversine(a[0], a[1], b[0], b[1]))
+
+            run_len_m = cum[-1]
+            run_len_ft = run_len_m * M_TO_FT
+
+            # Project every vault to this polyline; keep those within tolerance
+            touching: List[tuple[float, str]] = []  # (along_m, vault_id)
             for (vlat, vlon) in vault_coords:
-                idx = _closest_vertex_index(seg, (vlat, vlon))
-                if haversine(vlat, vlon, seg[idx][0], seg[idx][1]) <= THRESHOLD_M:
-                    touching.append((idx, vault_map.get((round(vlat, 6), round(vlon, 6)), "")))
+                best_dist_m = float("inf")
+                best_along_m = None
 
+                # scan each edge
+                for i in range(1, len(seg)):
+                    a, b = seg[i - 1], seg[i]
+                    d_m, t = _ptseg_distance_and_t_m((vlat, vlon), a, b)
+                    if d_m < best_dist_m:
+                        # along = cum up to edge-start + t * edge length (geodesic)
+                        edge_len_m = haversine(a[0], a[1], b[0], b[1])
+                        along_m = cum[i - 1] + t * edge_len_m
+                        best_dist_m = d_m
+                        best_along_m = along_m
+
+                if best_along_m is not None and best_dist_m <= THRESHOLD_M:
+                    v_id = vault_map.get((round(vlat, 6), round(vlon, 6)), "")
+                    touching.append((best_along_m, v_id))
+
+            # Sort by along-run position
             touching.sort(key=lambda t: t[0])
-
-            run_len_ft = _polyline_length_m(seg) * M_TO_FT
 
             if len(touching) < 2 and run_len_ft > float(max_gap_ft):
                 out.append({
@@ -272,10 +339,11 @@ def find_vault_spacing_issues(max_gap_ft: float = 500.0) -> List[dict]:
                 })
                 continue
 
+            # Check gaps between consecutive projected positions
             for i in range(1, len(touching)):
-                i0, v0 = touching[i-1]
-                i1, v1 = touching[i]
-                gap_m = _distance_along(seg, i0, i1)
+                a_along_m, v0 = touching[i - 1]
+                b_along_m, v1 = touching[i]
+                gap_m = b_along_m - a_along_m
                 if gap_m > lim_m:
                     out.append({
                         "Conduit ID": c.get("id", ""),
@@ -288,6 +356,75 @@ def find_vault_spacing_issues(max_gap_ft: float = 500.0) -> List[dict]:
                     })
 
     return out
+
+
+
+# def find_vault_spacing_issues(max_gap_ft: float = 500.0) -> List[dict]:
+#     """
+#     Walk each conduit polyline; project touching vaults to closest vertices; compute along-run
+#     distances between consecutive vaults; flag when gap > max_gap_ft. If a run has <2 vaults and
+#     its total length > max_gap_ft, flag the run.
+
+#     Returns rows:
+#       {
+#         "Conduit ID": <id>,
+#         "Conduit Vetro ID": <vetro_id>,
+#         "From Vault": <vetro_id or "(start)">,
+#         "To Vault": <vetro_id or "(end)">,
+#         "Distance (ft)": <float>,
+#         "Limit (ft)": <max_gap_ft>,
+#         "Issue": "Vault spacing exceeds 500 ft"
+#       }
+#     """
+#     vault_coords, vault_map = load_features("vault", "vetro_id")
+
+#     out: List[dict] = []
+#     lim_m = float(max_gap_ft) / M_TO_FT
+
+#     for c in _load_conduits():
+#         for seg in c.get("segments", []):
+#             if not seg or len(seg) < 2:
+#                 continue
+
+#             # collect vaults that touch this segment (by nearest-vertex proximity)
+#             touching: List[tuple[int, str]] = []
+#             for (vlat, vlon) in vault_coords:
+#                 idx = _closest_vertex_index(seg, (vlat, vlon))
+#                 if haversine(vlat, vlon, seg[idx][0], seg[idx][1]) <= THRESHOLD_M:
+#                     touching.append((idx, vault_map.get((round(vlat, 6), round(vlon, 6)), "")))
+
+#             touching.sort(key=lambda t: t[0])
+
+#             run_len_ft = _polyline_length_m(seg) * M_TO_FT
+
+#             if len(touching) < 2 and run_len_ft > float(max_gap_ft):
+#                 out.append({
+#                     "Conduit ID": c.get("id", ""),
+#                     "Conduit Vetro ID": c.get("vetro_id", ""),
+#                     "From Vault": touching[0][1] if touching else "(none)",
+#                     "To Vault": "(none)",
+#                     "Distance (ft)": round(run_len_ft, 1),
+#                     "Limit (ft)": float(max_gap_ft),
+#                     "Issue": "Vault spacing exceeds 500 ft",
+#                 })
+#                 continue
+
+#             for i in range(1, len(touching)):
+#                 i0, v0 = touching[i-1]
+#                 i1, v1 = touching[i]
+#                 gap_m = _distance_along(seg, i0, i1)
+#                 if gap_m > lim_m:
+#                     out.append({
+#                         "Conduit ID": c.get("id", ""),
+#                         "Conduit Vetro ID": c.get("vetro_id", ""),
+#                         "From Vault": v0 or "(unknown)",
+#                         "To Vault": v1 or "(unknown)",
+#                         "Distance (ft)": round(gap_m * M_TO_FT, 1),
+#                         "Limit (ft)": float(max_gap_ft),
+#                         "Issue": "Vault spacing exceeds 500 ft",
+#                     })
+
+#     return out
 
 
 # ------------------------------------------------------------------------
