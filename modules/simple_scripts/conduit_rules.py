@@ -343,138 +343,127 @@ def find_conduits_without_distribution(tolerance_ft: float | None = None) -> Lis
     return out
 
 
+def run_all_conduit_checks() -> dict[str, list[dict]]:
+    return {
+        # Underground Distribution without any nearby conduit
+        "df_missing_conduit": find_distributions_without_conduit(),
+
+        # Conduits that don’t carry any underground distribution
+        "conduit_missing_distribution": find_conduits_without_distribution(),
+
+        # Bad / blank conduit types
+        "type_issues": find_conduit_type_issues(),
+    }
+
+
+# modules/simple_scripts/conduit_rules.py  — replace the entire function
+
 def emit_conduit_logs(emit_info: bool = True) -> None:
     """
-    Emit log lines for all Conduit checks (Excel 'Conduit' sheet mirror),
+    Emit log lines for all Conduit checks (mirror of the Excel 'Conduit' sheet),
     plus an Overview of every conduit feature (attributes + a named Path chain).
 
-    Path chain:
-      • Walk order matches along-conduit geometry; ties for NAPs at same spot use
-        the walker’s first-appearance order if available.
-      • Items:
-          - Distribution-on-conduit:  <Distribution ID>
-          - Vault on conduit:         <Vault Vetro ID>
-          - NAP on conduit:           <NAP ID (label)>
-      • Separators:
-          - ' / ' between Vault and NAP that are at the *same* location
-          - ' > ' when the distribution changes
-          - ' -- ' between successive locations under the same distribution
-        If a distribution change happens exactly where Vault/NAP exist, they are
-        combined:  `> <Distribution ID> / <Vault> / <NAP>`.
-      • Start at the first Vault on that conduit (if any).
+    Path chain rules (instead of coordinate breadcrumbs):
+      • Use the same end-to-end flow as the Distribution/NAP walker, in practice
+        by ordering NAPs according to walker order when available, and otherwise
+        by along-conduit vertex order.
+      • Tokens included on the chain:
+          - Distribution lines "on" the conduit:  <Distribution ID> / <Vetro ID>
+          - Vaults on the conduit:                 <Vault Vetro ID>
+          - NAPs on the conduit:                   <NAP ID>
+      • When a Vault and NAP share the same point, join with " / " (e.g.,
+        "VetroID / NAPID").
+      • Use " > " when the *distribution line changes*.
+      • Within an unbroken distribution, separate the successive Vault/NAP
+        points using " -- ".
+      • Start the chain at the **first Vault** encountered on the conduit if one
+        exists.
 
     Wrapping:
-      • Path column wraps at ≤250 visible chars, only at ' > ', ' -- ', or ' / '.
-      • Continuation lines repeat only the Path cell.
+      • The Path column is wrapped to lines of up to 250 visible characters.
+      • Wrap can only occur at: " > ", " -- ", " / ".
+      • Continuation lines repeat all non-Path columns (aligned), so the block
+        reads vertically.
 
-    NOTE: This is a *presentation-only* path builder; no business logic is changed.
+    This function only logs; it does not modify the underlying results used for
+    Excel.
     """
     import json
-    import math
     import logging
     from pathlib import Path
+
     import modules.config as cfg
     from modules.basic.log_configs import format_table_lines
 
     log = logging.getLogger(__name__)
 
     # ---------------------------------------------------------
-    # Utilities
+    # Small helpers (kept local; no change to business logic)
     # ---------------------------------------------------------
-    def _data_dir() -> Path:
+    def _data_dir() -> Path:  # Always use project-wide DATA_DIR
         return Path(getattr(cfg, "DATA_DIR"))
 
-    # Visible-length (strip ANSI if present)
-    import re
-    _ansi_re = re.compile(r"\x1b\[[0-9;]*m")
-    def _vlen(s: str) -> int:
-        return len(_ansi_re.sub("", str(s)))
-
     def _read_geojson_many(globs: list[str]) -> list[dict]:
+        """Load features from DATA_DIR using one or more glob patterns."""
         feats: list[dict] = []
         for pat in globs:
             for fp in sorted(_data_dir().glob(pat)):
                 try:
                     with fp.open("r", encoding="utf-8") as f:
                         gj = json.load(f)
-                    feats.extend(gj.get("features") or [])
+                    for ft in (gj.get("features") or []):
+                        feats.append(ft)
                 except Exception:
                     continue
         return feats
 
-    def _as_point_coords(ft: dict) -> tuple[float, float] | None:
-        g = (ft or {}).get("geometry") or {}
-        if g.get("type") == "Point":
-            c = g.get("coordinates") or []
-            if len(c) >= 2 and c[0] is not None and c[1] is not None:
-                return (float(c[0]), float(c[1]))
+    def _as_point_coords(feat: dict) -> tuple[float, float] | None:
+        try:
+            g = feat.get("geometry") or {}
+            if g.get("type") == "Point":
+                lon, lat = g.get("coordinates", [None, None])
+                if lon is not None and lat is not None:
+                    return (float(lon), float(lat))
+        except Exception:
+            pass
         return None
 
-    def _as_lines_coords(ft: dict) -> list[list[tuple[float, float]]]:
+    def _as_lines_coords(feat: dict) -> list[list[tuple[float, float]]]:
+        """Return list of segments: for LineString → [coords], for MultiLineString → [coords1, coords2, ...]."""
         out: list[list[tuple[float, float]]] = []
-        g = (ft or {}).get("geometry") or {}
+        g = feat.get("geometry") or {}
         t = g.get("type")
         if t == "LineString":
             coords = g.get("coordinates") or []
             out.append([(float(x), float(y)) for x, y in coords if x is not None and y is not None])
         elif t == "MultiLineString":
-            for line in g.get("coordinates") or []:
+            for line in (g.get("coordinates") or []):
                 out.append([(float(x), float(y)) for x, y in line if x is not None and y is not None])
         return out
 
     def _first_nonempty(*vals: str) -> str:
         for v in vals:
             if v:
-                return str(v)
+                return v
         return ""
 
-    # Light-weight planar distance (lon scaled by cos(lat))
-    def _planar_dx_dy(a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float]:
-        ax, ay = a
-        bx, by = b
-        cy = math.radians((ay + by) * 0.5)
-        scale = math.cos(cy)
-        return ( (bx - ax) * scale, (by - ay) )
+    # Visible-length (strip ANSI if any)
+    import re
+    _ansi_re = re.compile(r"\x1b\[[0-9;]*m")
+    def _vlen(s: str) -> int:
+        return len(_ansi_re.sub("", s))
 
-    def _dist2(a: tuple[float, float], b: tuple[float, float]) -> float:
-        dx, dy = _planar_dx_dy(a, b)
-        return dx*dx + dy*dy
+    # Soft equality for coordinates when snapping points to polyline vertices.
+    # (We intentionally avoid geometric libs; this is only for log presentation.)
+    EPS = 1e-7  # ~1 cm at mid-lat in lon/lat degrees; tweak if needed
+    def _pt_eq(a: tuple[float, float], b: tuple[float, float]) -> bool:
+        return abs(a[0] - b[0]) <= EPS and abs(a[1] - b[1]) <= EPS
 
-    def _point_seg_distance2(p: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> tuple[float, float, float]:
-        """
-        Return (d2, t, seg_len) where:
-          • d2 = squared planar distance from point p to segment ab
-          • t in [0,1] is the projection parameter along ab
-          • seg_len is the planar length of ab (not squared)
-        """
-        dx, dy = _planar_dx_dy(a, b)
-        seg_len2 = dx*dx + dy*dy
-        if seg_len2 == 0.0:
-            return (_dist2(p, a), 0.0, 0.0)
-        px, py = _planar_dx_dy(a, p)
-        t = (px*dx + py*dy) / seg_len2
-        if t < 0.0:
-            t = 0.0
-        elif t > 1.0:
-            t = 1.0
-        proj = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
-        d2 = _dist2(p, proj)
-        return (d2, t, math.sqrt(seg_len2))
-
-    # Tolerances ~ meters → degrees (planar, since we scale lon)
-    # tol_point_on_line ~3m; pos grouping ~1m
-    DEG_PER_M = 1.0 / 111000.0
-    TOL_D2 = (3.0 * DEG_PER_M) ** 2
-    POS_TOL = 1.0 * DEG_PER_M
-
-    # ---------------------------------------------------------
-    # Data collectors (presentation only; use DATA_DIR)
-    # ---------------------------------------------------------
-    def _collect_conduits() -> list[dict]:
-        # Use the internal loader so segment lists & attrs match existing logic
+    def _collect_conduits() -> list[dict]:  # Existing internal loader already used elsewhere in this module
         return list(_load_conduits())
 
     def _collect_vault_points() -> list[tuple[tuple[float, float], str]]:
+        """Return [(pt, vault_vetro_id)] including both standard vaults and T3."""
         feats = _read_geojson_many([
             "vault*.geojson", "vaults*.geojson", "t-3-vault*.geojson", "t3-vault*.geojson"
         ])
@@ -483,53 +472,72 @@ def emit_conduit_logs(emit_info: bool = True) -> None:
             pt = _as_point_coords(ft)
             if not pt:
                 continue
-            p = (ft.get("properties") or {})
-            vetro = _first_nonempty(p.get("vetro_id", ""), p.get("Vetro ID", ""), p.get("id", ""), p.get("ID", ""))
-            if vetro:
-                out.append((pt, str(vetro)))
+            p = ft.get("properties") or {}
+            vetro = _first_nonempty(str(p.get("vetro_id") or ""), str(p.get("Vetro ID") or ""))
+            if not vetro:
+                vetro = str(p.get("id") or p.get("ID") or "")
+            if pt:
+                out.append((pt, vetro))
         return out
 
     def _collect_nap_points() -> list[tuple[tuple[float, float], str]]:
+        """Return [(pt, nap_label)] using the friendly NAP ID label."""
         feats = _read_geojson_many(["nap*.geojson", "NAP*.geojson"])
         out: list[tuple[tuple[float, float], str]] = []
         for ft in feats:
             pt = _as_point_coords(ft)
             if not pt:
                 continue
-            p = (ft.get("properties") or {})
-            label = _first_nonempty(
-                p.get("NAP ID", ""), p.get("NAP", ""), p.get("label", ""), p.get("Name", ""), p.get("id", ""), p.get("vetro_id", "")
+            p = ft.get("properties") or {}
+            # Try common fields used in this project
+            nap_label = _first_nonempty(
+                str(p.get("NAP ID") or ""),
+                str(p.get("NAP") or ""),
+                str(p.get("label") or ""),
+                str(p.get("Name") or ""),
             )
-            if label:
-                out.append((pt, str(label)))
+            if not nap_label:  # Last resort: use vetro + type
+                nap_label = _first_nonempty(str(p.get("id") or ""), str(p.get("vetro_id") or ""))
+            out.append((pt, nap_label))
         return out
 
-    def _collect_ug_distributions() -> list[tuple[list[list[tuple[float, float]]], str]]:
+    def _collect_ug_distributions() -> list[tuple[list[list[tuple[float, float]]], str, str]]:
+        """Return [(segments, dist_label, dist_vetro)] from Underground Distribution layer."""
         feats = _read_geojson_many(["fiber-distribution-underground*.geojson"])
-        out: list[tuple[list[list[tuple[float, float]]], str]] = []
+        out: list[tuple[list[list[tuple[float, float]]], str, str]] = []
         for ft in feats:
             segs = _as_lines_coords(ft)
             if not segs:
                 continue
-            p = (ft.get("properties") or {})
-            dist_label = _first_nonempty(p.get("Distribution ID", ""), p.get("label", ""), p.get("Name", ""))
-            if dist_label:
-                out.append((segs, str(dist_label)))
+            p = ft.get("properties") or {}
+            dist_label = _first_nonempty(
+                str(p.get("Distribution ID") or ""),
+                str(p.get("label") or ""),
+                str(p.get("Name") or ""),
+            )
+            dist_vetro = _first_nonempty(str(p.get("vetro_id") or ""), str(p.get("Vetro ID") or ""), str(p.get("id") or ""))
+            out.append((segs, dist_label, dist_vetro))
         return out
 
-    # Optional: first-appearance order from walker (for tie-breaking of NAPs)
+    # Walker-derived NAP order (optional, best-effort)
     def _nap_order_from_walker() -> dict[str, int]:
+        """
+        Build a first-appearance order index for NAP labels by parsing the
+        Distribution/NAP walker paths when available.
+        """
         order: dict[str, int] = {}
+        idx = 0
         try:
+            # Present in your hard_scripts walker
             from modules.hard_scripts.distribution_walker import get_walk_paths_map  # type: ignore
             pm = get_walk_paths_map() or {}
+            # NAP IDs look like '##.AAAA.BBB.N##' optionally followed by ' (...)'
             nap_re = re.compile(r"\b\d{2}\.[A-Z0-9]+\.[A-Z0-9]+\.[Nn]\d+\b(?:\s*\([^)]*\))?")
-            idx = 0
             for _sid, path in pm.items():
                 for m in nap_re.finditer(str(path)):
-                    t = m.group(0)
-                    if t not in order:
-                        order[t] = idx
+                    nap = m.group(0)
+                    if nap not in order:
+                        order[nap] = idx
                         idx += 1
         except Exception:
             pass
@@ -537,190 +545,159 @@ def emit_conduit_logs(emit_info: bool = True) -> None:
 
     NAP_ORDER = _nap_order_from_walker()
 
-    # ---------------------------------------------------------
-    # Geometry helpers on the conduit
-    # ---------------------------------------------------------
-    def _flatten_conduit_vertices(conduit: dict) -> tuple[list[tuple[float, float]], list[tuple[int, int]], list[float]]:
-        """
-        Return (verts, seg_idx_pairs, cumdist):
-          • verts: [ (lon,lat) ... ] across all conduit parts (LineString/MultiLineString flattened)
-          • seg_idx_pairs: [ (i, i+1) ... ] index pairs for each segment
-          • cumdist: cumulative planar distance at each vertex index
-        """
-        verts: list[tuple[float, float]] = []
-        seg_pairs: list[tuple[int, int]] = []
-        cum: list[float] = []
-        total = 0.0
-
-        base_index = 0
-        for part in conduit.get("segments") or []:
-            coords = [(float(x), float(y)) for (x, y) in (part or [])]
-            if not coords:
-                continue
-            # append, creating segment pairs
-            for j, pt in enumerate(coords):
-                verts.append(pt)
-                if base_index + j > 0:
-                    a = verts[base_index + j - 1]
-                    b = pt
-                    dx, dy = _planar_dx_dy(a, b)
-                    total += math.hypot(dx, dy)
-                    seg_pairs.append((base_index + j - 1, base_index + j))
-                cum.append(total)
-            base_index += len(coords)
-
-        if not verts:
-            cum = []
-        return (verts, seg_pairs, cum)
-
-    def _project_point_to_conduit(pt: tuple[float, float], verts: list[tuple[float, float]], pairs: list[tuple[int, int]], cum: list[float]) -> tuple[float, float] | None:
-        """
-        Project a point to the nearest segment of the conduit; return (pos_along, d2).
-        """
-        best = None
-        best_d2 = 1e100
-        best_pos = 0.0
-        for (i, j) in pairs:
-            a, b = verts[i], verts[j]
-            d2, t, seg_len = _point_seg_distance2(pt, a, b)
-            if d2 < best_d2:
-                best_d2 = d2
-                best_pos = (cum[i] + t * seg_len) if seg_len > 0 else cum[i]
-                best = (best_pos, best_d2)
-        if best is None:
-            return None
-        return best
-
-    # ---------------------------------------------------------
-    # Build one conduit path (presentation)
-    # ---------------------------------------------------------
     def _build_conduit_named_path(conduit: dict) -> str:
-        verts, seg_pairs, cum = _flatten_conduit_vertices(conduit)
-        if not verts or not seg_pairs:
+        """
+        Construct the named chain for one conduit, following the rules above.
+        We use:
+          • vertex-based snapping to detect Vaults/NAPs 'on' the conduit (EPS tolerance),
+          • distribution touches when any distribution vertex equals a conduit vertex,
+          • NAP ordering from walker when available; otherwise conduit vertex order.
+        """
+        segs = conduit.get("segments") or []
+        # Flatten conduit vertices with index → [(i,(lon,lat))]
+        verts: list[tuple[int, tuple[float, float]]] = []
+        v_i = 0
+        for seg in segs:
+            for pt in (seg or []):
+                verts.append((v_i, (float(pt[0]), float(pt[1]))))
+                v_i += 1  # do not duplicate between segments; index just keeps increasing
+        if not verts:
             return ""
 
-        # Gather features projected onto this conduit
+        # Snap Vaults and NAPs by vertex proximity (EPS)
         vault_pts = _collect_vault_points()
-        nap_pts   = _collect_nap_points()
-        dists     = _collect_ug_distributions()
+        nap_pts = _collect_nap_points()
+        dists = _collect_ug_distributions()
 
-        # Events: (pos, kind, value)
-        events: list[tuple[float, str, str]] = []
+        # index of conduit vertex -> {'vault':[...], 'nap':[...], 'dist':[...]}
+        at: dict[int, dict[str, list[str]]] = {}
 
-        # Vaults
-        for pt, vetro in vault_pts:
-            proj = _project_point_to_conduit(pt, verts, seg_pairs, cum)
-            if proj and proj[1] <= TOL_D2:
-                events.append((proj[0], "vault", vetro))
+        def _push(kind: str, idx: int, txt: str):
+            at.setdefault(idx, {}).setdefault(kind, []).append(txt)
+
+        # map Distribution first-touch index
+        dist_first_touch: dict[str, int] = {}
 
         # NAPs
-        for pt, label in nap_pts:
-            proj = _project_point_to_conduit(pt, verts, seg_pairs, cum)
-            if proj and proj[1] <= TOL_D2:
-                events.append((proj[0], "nap", label))
+        for (nap_xy, nap_label) in nap_pts:
+            for vi, vxy in verts:
+                if _pt_eq(nap_xy, vxy):
+                    _push("nap", vi, nap_label)
+                    break
 
-        # Distributions: project each vertex; keep nearest
-        dist_first_touch: dict[str, float] = {}
-        for segs, dlabel in dists:
-            best: tuple[float, float] | None = None
-            for line in segs:
-                for p in line:
-                    proj = _project_point_to_conduit(p, verts, seg_pairs, cum)
-                    if not proj:
-                        continue
-                    if proj[1] <= TOL_D2 and (best is None or proj[1] < best[1]):
-                        best = proj
-            if best:
-                pos, d2 = best
-                events.append((pos, "dist", dlabel))
-                # Remember first-touch position for tie-breaking
-                if dlabel not in dist_first_touch:
-                    dist_first_touch[dlabel] = pos
+        # Vaults
+        for (vt_xy, vt_vetro) in vault_pts:
+            for vi, vxy in verts:
+                if _pt_eq(vt_xy, vxy):
+                    _push("vault", vi, vt_vetro)
+                    break
 
-        if not events:
+        # Distributions: consider a distribution 'touching' at the first shared vertex
+        for seg_list, dlabel, dv in dists:
+            found_vi = None
+            for seg in seg_list:
+                for p in seg:
+                    for vi, vxy in verts:
+                        if _pt_eq(p, vxy):
+                            found_vi = vi
+                            break
+                    if found_vi is not None:
+                        break
+                if found_vi is not None:
+                    break
+            if found_vi is not None:
+                token = f"{_first_nonempty(dlabel)} / {dv}" if dv else _first_nonempty(dlabel)
+                _push("dist", found_vi, token)
+                # Remember the first time this distribution appears
+                dist_first_touch.setdefault(token, found_vi)
+
+        if not at and not dist_first_touch:
             return ""
 
-        # Sort events along the conduit, stable tie-break:
-        def _ev_key(ev: tuple[float, str, str]):
-            pos, kind, val = ev
-            # NAPs tie-broken by walker order if available
-            nap_order = NAP_ORDER.get(val, 10_000) if kind == "nap" else 0
-            # Prioritize 'dist' before vault/nap at the same spot (so we can coalesce 'dist / vault')
-            pri = {"dist": 0, "vault": 1, "nap": 2}.get(kind, 9)
-            return (pos, pri, nap_order, kind, val)
-
-        events.sort(key=_ev_key)
-
-        # Group events within ~1m along-conduit so co-located things merge
-        grouped: list[tuple[float, list[tuple[str, str]]]] = []
-        for pos, kind, val in events:
-            if not grouped or abs(pos - grouped[-1][0]) > POS_TOL:
-                grouped.append((pos, [(kind, val)]))
-            else:
-                grouped[-1][1].append((kind, val))
-
-        # Choose starting point: first group that has a 'vault'; else first group
-        start_idx = 0
-        for idx, (_, items) in enumerate(grouped):
-            if any(k == "vault" for k, _ in items):
-                start_idx = idx
+        # Choose starting index: first vertex that has a Vault, else 0
+        start_idx = None
+        for vi in sorted(at.keys()):
+            if "vault" in at[vi]:
+                start_idx = vi
                 break
+        if start_idx is None:
+            start_idx = 0
 
-        # Build path pieces
-        chain_parts: list[tuple[str, str]] = []  # (sep, token)
+        # Build ordered sequence across vertices, using walker NAP order (if present) to
+        # sort multiple NAPs that land on the same vertex.
         current_dist: str | None = None
+        pieces: list[str] = []
 
-        for gi in range(start_idx, len(grouped)):
-            pos, items = grouped[gi]
-            d_here = [v for (k, v) in items if k == "dist"]
-            v_here = sorted([v for (k, v) in items if k == "vault"])
-            n_here = sorted([v for (k, v) in items if k == "nap"], key=lambda n: NAP_ORDER.get(n, 10_000))
+        for vi, vxy in verts:
+            if vi < start_idx:
+                continue
 
-            # Pick deterministic distribution if multiple (closest first-touch)
-            d_token = None
-            if d_here:
-                d_token = sorted(d_here, key=lambda d: dist_first_touch.get(d, pos))[0]
+            items = at.get(vi, {})
 
-            # Cell tokens (vault/nap) joined with ' / '
-            cell = " / ".join([*v_here, *n_here]) if (v_here or n_here) else ""
+            # Distribution switch?
+            dist_tokens = items.get("dist", [])
+            sw_token = None
+            # If multiple dists touch at this vertex, keep the one that 'starts' earliest
+            if dist_tokens:
+                sw_token = sorted(dist_tokens, key=lambda t: dist_first_touch.get(t, vi))[0]
 
-            if d_token and d_token != current_dist:
-                # Distribution change
-                if cell:
-                    # combine at this hop: "> Dist / Vault / NAP"
-                    chain_parts.append((" > ", f"{d_token} / {cell}"))
-                else:
-                    chain_parts.append((" > ", d_token))
-                current_dist = d_token
-            elif cell:
-                # No dist change; under same distribution?
+            if sw_token and sw_token != current_dist:
+                # Change in distribution → use " > "
+                pieces.append((" > ", sw_token))
+                current_dist = sw_token
+
+            # Collocate Vault/NAP at the same vertex → " / " cell_tokens
+            cell_tokens: list[str] = []
+            # Vaults first (deterministic)
+            for vv in sorted(items.get("vault", [])):
+                if vv:
+                    cell_tokens.append(vv)
+            # NAPs next, ordered by walker index if available
+            naps_here = items.get("nap", []) or []
+            naps_here_sorted = sorted(naps_here, key=lambda n: NAP_ORDER.get(n, 10_000))
+            for nv in naps_here_sorted:
+                if nv:
+                    cell_tokens.append(nv)
+
+            if cell_tokens:
+                # If already in a distribution, use " -- " between points within same dist
                 sep = " -- " if current_dist else " > "
-                chain_parts.append((sep, cell))
-            # else: nothing to add at this position
+                pieces.append((sep, " / ".join(cell_tokens)))
 
-        # Render into a single string
+        # Render to a single string with separators
         chain = ""
-        for sep, token in chain_parts:
+        for sep, token in pieces:
             if not token:
                 continue
-            if not chain:
-                chain = token  # drop leading sep
+            if not chain:  # strip leading ' > ' if present
+                chain = token
             else:
                 chain += f"{sep}{token}"
         return chain
 
     def _wrap_chain(chain: str, width: int = 250) -> list[str]:
+        """
+        Wrap a chain on boundaries ' > ', ' -- ', ' / ' so that each line is <= width
+        visible characters.
+
+        Returns list of lines.
+        """
         if not chain:
             return [""]
+
+        # Tokenize by the three separators, but keep them associated.
+        # We build a list of (sep, token) where the first item may have "" sep.
         parts: list[tuple[str, str]] = []
         pat = re.compile(r"( > | -- | / )")
-        toks = pat.split(chain)
-        if toks:
-            parts.append(("", toks[0]))
+        tokens = pat.split(chain)  # tokens like [chunk, sep, chunk, sep, chunk, ...]
+        if tokens:
+            first = tokens[0]
+            parts.append(("", first))
             i = 1
-            while i + 1 < len(toks):
-                parts.append((toks[i], toks[i + 1]))
+            while i + 1 < len(tokens):
+                parts.append((tokens[i], tokens[i + 1]))
                 i += 2
+
         lines: list[str] = []
         cur = ""
         for sep, tok in parts:
@@ -728,78 +705,98 @@ def emit_conduit_logs(emit_info: bool = True) -> None:
             if _vlen(cur) + _vlen(add) <= width:
                 cur += add
             else:
+                # push current line, start a new one with token (without splitting it)
                 if cur:
                     lines.append(cur)
-                cur = tok  # start new line at token (no leading sep at column 0)
+                cur = tok  # start new line without carrying separator visually at column 0
         if cur:
             lines.append(cur)
         return lines
 
-    # Respect LOG_DETAIL — Overview goes to INFO unless DEBUG is selected
+    # Respect LOG_DETAIL for how "chatty" the overview is
     detail = str(getattr(cfg, "LOG_DETAIL", "DEBUG")).upper()
     info_emit = log.debug if detail == "DEBUG" else log.info
 
-    # ------------------------------
-    # A) Overview (all conduits)
-    # ------------------------------
+    # --------------------------------
+    # A) Overview of ALL conduit rows
+    # --------------------------------
     headers = ["Conduit ID", "Conduit Vetro ID", "Conduit Type", "#Segments", "#Vertices", "Path"]
     rows_expanded: list[list[str]] = []
 
-    conduits = list(_collect_conduits())
+    conduits = _collect_conduits()
     for c in conduits:
         segs = c.get("segments", [])
-        seg_ct = len(segs)
-        vtx_ct = sum(len(s) for s in segs)
-        chain = _build_conduit_named_path(c)
-        wrapped = _wrap_chain(chain, 250)
+        seg_count = len(segs)
+        vtx_count = sum(len(s) for s in segs)
 
+        path_chain = _build_conduit_named_path(c)
+        wrapped = _wrap_chain(path_chain, width=250) or [""]
+
+        # First (main) line
         rows_expanded.append([
             c.get("id", ""),
             c.get("vetro_id", ""),
             c.get("type", ""),
-            str(seg_ct),
-            str(vtx_ct),
+            str(seg_count),
+            str(vtx_count),
             wrapped[0],
         ])
+        # Continuations: blank the fixed cols except keep them aligned by padding
         for cont in wrapped[1:]:
             rows_expanded.append(["", "", "", "", "", cont])
 
     if rows_expanded and emit_info:
         info_emit("===== [Conduit] Overview (all features) =====")
-        for line in format_table_lines(headers, rows_expanded, max_col_widths=[32, 36, 24, 9, 9, 250], center_headers=True):
+        for line in format_table_lines(
+            headers,
+            rows_expanded,
+            max_col_widths=[32, 36, 24, 9, 9, 250],
+            center_headers=True,   # center the headers (like the Walker log)
+        ):
             info_emit(f"[Conduit] {line}")
         info_emit("===== End [Conduit] Overview =====")
 
-    # ------------------------------
-    # B) Issue tables (no logic changes)
-    # ------------------------------
+    # -----------------------------------
+    # B) Issue tables (mirror Excel bits)
+    # -----------------------------------
     def _issue_table(title: str, headers: list[str], items: list[dict] | None):
         if not items:
             return
-        lines = format_table_lines(headers, [[str(it.get(h, "")) for h in headers] for it in items], center_headers=True)
+        lines = format_table_lines(
+            headers,
+            [[str(it.get(h, "")) for h in headers] for it in items],
+            center_headers=True,   # center issue-table headers too
+        )
         log.error(f"==== {title} ({len(items)}) ====")
         for ln in lines:
             log.error(f"[Conduit Issues] {ln}")
         log.info(f"==== End {title} ====")
 
-    results = run_all_conduit_checks()  # existing
-    from modules.simple_scripts.vault_rules import find_vaults_missing_conduit as _find_vaults_missing_conduit
-    vault_missing = find_vaults_missing_conduit()  # existing
+    # Use your existing finders (no logic changes)
+    results = run_all_conduit_checks()      # existing function producing Excel’s three issue lists
+    vault_missing = find_vaults_missing_conduit()  # existing function
 
-    _issue_table("Distribution Without Conduit", ["Distribution ID", "Vetro ID", "Issue"], results.get("df_missing_conduit"))
-    _issue_table("Conduit Without Underground Distribution", ["Conduit ID", "Conduit Vetro ID", "Issue"], results.get("conduit_missing_distribution"))
-    _issue_table("Conduit Type Issues", ["Conduit ID", "Conduit Vetro ID", "Conduit Type", "Issue"], results.get("type_issues"))
-    _issue_table("Vaults Missing Conduit", ["Vault Vetro ID", "Issue"], vault_missing)
+    _issue_table(
+        "Distribution Without Conduit",
+        ["Distribution ID", "Vetro ID", "Issue"],
+        results.get("df_missing_conduit"),
+    )
+    _issue_table(
+        "Conduit Without Underground Distribution",
+        ["Conduit ID", "Conduit Vetro ID", "Issue"],
+        results.get("conduit_missing_distribution"),
+    )
+    _issue_table(
+        "Conduit Type Issues",
+        ["Conduit ID", "Conduit Vetro ID", "Conduit Type", "Issue"],
+        results.get("type_issues"),
+    )
+    _issue_table(
+        "Vaults Missing Conduit",
+        ["Vault Vetro ID", "Issue"],
+        vault_missing,
+    )
 
-def run_all_conduit_checks() -> dict[str, List[dict]]:
-    return {
-        # Underground Distribution without any nearby conduit
-        "df_missing_conduit": find_distributions_without_conduit(),
-        # Conduits that don’t carry any underground distribution
-        "conduit_missing_distribution": find_conduits_without_distribution(),
-        # Bad / blank conduit types
-        "type_issues": find_conduit_type_issues(),
-    }
 
 
 
