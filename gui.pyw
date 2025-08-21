@@ -137,11 +137,55 @@ class SettingsDialog(tk.Toplevel):
         except Exception:
             traceback.print_exc()
 
-        messagebox.showinfo("Settings", "Settings applied. Log output will reflect new configuration.")
+        # === NEW: Persist Settings → <Output>/user_prefs.json (the same file used by config.py) ===
+        # Build a minimal payload of the settings this dialog controls (what the user just chose).
+        settings_payload = {}
+        for k, var in self._bool_vars.items():
+            settings_payload[k] = bool(var.get())
+        for k, var in self._choice_vars.items():
+            settings_payload[k] = str(var.get()).upper()
+
+        # Read/merge/save via modules.config prefs helpers (writes to <Output>/user_prefs.json).
+        try:
+            from modules import config as _cfg
+            prefs = _cfg._load_prefs() or {}
+            prefs["settings"] = settings_payload
+            _cfg._save_prefs(prefs)
+        except Exception:
+            traceback.print_exc()
+
+        messagebox.showinfo("Settings", "Settings applied.\nLog output will reflect new configuration.")
+
 
     def _close(self):
         self.grab_release()
         self.destroy()
+
+
+# --- Settings → user_prefs.json snapshot helper (gui.pyw) ---
+def _collect_current_settings_for_prefs() -> dict:
+    """
+    Collect the subset of modules.config options that the Settings dialog exposes,
+    so we can persist them into user_prefs.json.
+    """
+    import modules.config as cfg
+    WHITELIST = [
+        "SHOW_ALL_SHEETS",
+        "LOG_SHOW_ABBREV_HEADER",
+        "LOG_DETAIL",
+        "OUTPUT_XLSX",
+        "ID_COL",
+        "LOG_ABBREV_HEADER_LINES",
+        "PATTERNS",
+    ]
+    snap = {}
+    for key in WHITELIST:
+        if hasattr(cfg, key):
+            val = getattr(cfg, key)
+            if isinstance(val, tuple):
+                val = list(val)
+            snap[key] = val
+    return snap
 
 
 # --- NEW: persist GUI Settings in user_prefs.json ----------------------------
@@ -390,7 +434,8 @@ class PeerCheckGUI(tk.Tk):
     # gui.pyw — early in app startup (e.g., end of PeerCheckGUI.__init__)
     def _apply_settings_from_prefs_on_startup():
         import modules.config as cfg
-        prefs = _load_prefs_json()
+        from modules import config as _cfg
+        prefs = _cfg._load_prefs()
         settings = prefs.get("settings") or {}
         # only set known, safe keys to avoid surprises
         for k, v in settings.items():
