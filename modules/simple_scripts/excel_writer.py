@@ -592,71 +592,6 @@ def write_drop_issues_sheet(wb, mismatches):
     apply_borders(ws)
 
 
-# def write_fiber_drop_sheet(wb, service_coords, drop_coords, mismatches):
-#     """
-#     Writes a sheet listing Service Location IDs whose
-#     Splice Colors ≠ fiber-drop Color, or are missing Drops.
-#     Also (optionally) mirrors the same rows to peercheck.log.
-#     When both LOG_DROP_DEBUG and LOG_DROP_SHEET_TO_LOG are True,
-#     the mirror is suppressed to avoid duplicate log lines.
-#     """
-#     import modules.config
-#     import logging
-#     logger = logging.getLogger(__name__)
-
-#     # 1) Create sheet
-#     ws = wb.create_sheet(title='Drop Issues')
-#     ws.freeze_panes = 'A5'
-
-#     # 2) Merge A1:C3 for the banner description (expanded to cover the new Issue column)
-#     ws.merge_cells('A1:C3')
-#     header_text = (
-#         'Missing Attributes on Service Locations and/or wrong Drop Color going to '
-#         'Service Locations - If Errors still happen, check if the color is the '
-#         'correct color, not others like "Purple".'
-#     )
-#     header_cell = ws['A1']
-#     header_cell.value = header_text
-#     header_cell.alignment = Alignment(horizontal='center', wrap_text=True)
-#     header_cell.font      = Font(bold=True)
-
-#     # 3) Table column titles on row 4  (add Issue column)
-#     headers = ['Service Location ID', 'Missing Drops (Service Location ID)', 'Issue']
-#     for c, title in enumerate(headers, start=1):
-#         ws.cell(row=4, column=c, value=title)
-
-#     # 4) Normalize 'mismatches' to a mapping or ordered list of SIDs
-#     #    Accepts: list/tuple/set of SIDs or dict {sid: missing_sid}
-#     if isinstance(mismatches, dict):
-#         ordered_sids = sorted(mismatches.keys())
-#         getter = mismatches.get
-#     else:
-#         ordered_sids = sorted(mismatches or [])
-#         getter = lambda _sid: None
-
-#     # 5) Write rows (starting at row 5)
-#     rows_written = []
-#     for idx, sid in enumerate(ordered_sids, start=5):
-#         miss_val = getter(sid)
-#         ws.cell(row=idx, column=1, value=sid)
-#         if miss_val:
-#             ws.cell(row=idx, column=2, value=miss_val)
-#         # New Issue column with short description
-#         ws.cell(row=idx, column=3, value="Missing drop or color mismatch")
-#         rows_written.append([sid, miss_val, "Missing drop or color mismatch"])
-
-#     # 6) Optional: mirror this sheet to peercheck.log (headers + data)
-#     #     • Controlled by config.LOG_DROP_SHEET_TO_LOG
-#     #     • Suppressed when config.LOG_DROP_DEBUG is True to prevent double logging
-#     if getattr(modules.config, "LOG_DROP_SHEET_TO_LOG", False) and not getattr(modules.config, "LOG_DROP_DEBUG", False):
-#         logger.info("===== Drop Issues (Excel Mirror) =====")
-#         logger.info(" | ".join(headers))
-#         for row in rows_written:
-#             logger.error(" | ".join(str(val) if val is not None else "" for val in row))
-#         logger.info("===== End Drop Issues (Excel Mirror) =====")
-#     apply_borders(ws)
-
-
 # /mnt/data/excel_writer.py  (lines 482–643)
 def write_slack_loop_issues_sheet(wb, sd_issues, ug_issues, aerial_issues=None, tail_issues=None):
     """
@@ -922,7 +857,13 @@ def write_footage_issues_sheet(wb, mismatches):
 
 def write_nid_issues(wb, nid_issues: list):
     from openpyxl.styles import Alignment, Font
+    import logging
+    import modules.config
+    from modules.basic.log_configs import format_table_lines
 
+    logger = logging.getLogger(__name__)
+
+    # Create sheet
     ws = wb.create_sheet(title='NID Issues')
 
     # Banner across 7 columns
@@ -967,19 +908,16 @@ def write_nid_issues(wb, nid_issues: list):
         for r in range(2, ws.max_row + 1):
             ws.cell(row=r, column=col).alignment = center
 
-    # --- INFO-level aligned table (✅ / ❌) + tabular error header ---
-    import logging as _logging
-    import modules.config
-    from modules.basic.log_configs import format_table_lines
+    # ---------------------------
+    # Error-only logging (single)
+    # ---------------------------
 
-    _detail = str(getattr(modules.config, "LOG_DETAIL", "DEBUG")).upper()
-
-    # Local color helpers (emoji when LOG_COLOR_MODE == 'EMOJI')
+    # Emoji color helpers (used only for log prettiness when LOG_COLOR_MODE == 'EMOJI')
     def _color_emoji(name: str) -> str:
         mapping = {
-            "Blue": "🟦", "Orange": "🟧", "Green": "🟩", "Brown": "🟫",
-            "Slate": "◼️", "White": "⬜", "Red": "🟥", "Black": "⬛",
-            "Yellow": "🟨", "Violet": "🟪", "Rose": "🩷", "Aqua": "💧",
+            "Blue": "", "Orange": "", "Green": "", "Brown": "",
+            "Slate": "◾️", "White": "⬜", "Red": "", "Black": "⬛",
+            "Yellow": "", "Violet": "", "Rose": "", "Aqua": "",
         }
         return mapping.get((name or "").strip(), "◻️")
 
@@ -994,113 +932,43 @@ def write_nid_issues(wb, nid_issues: list):
         mode = str(getattr(modules.config, "LOG_COLOR_MODE", "OFF")).upper()
         return _color_emoji(name) if mode == "EMOJI" else (name or "")
 
-    # Build a complete list for aligned INFO output (kept separate from the Excel sheet)
-    all_rows = None
-    if _detail == "INFO":
-        try:
-            from modules.simple_scripts.nids import iterate_nid_checks
-            all_rows = iterate_nid_checks(include_ok=True)
-        except Exception:
-            all_rows = None
+    # Prefer the full computed list (OK+errors) if available; otherwise use nid_issues
+    rows_source = None
+    try:
+        from modules.simple_scripts.nids import iterate_nid_checks
+        rows_source = iterate_nid_checks(include_ok=True)
+    except Exception:
+        rows_source = None
+    if not rows_source:
+        rows_source = nid_issues or []
 
-    # Print the aligned table for ALL checks (OK + errors) at INFO
-    if _detail == "INFO" and all_rows:
-        rows_for_table = []
-        for d in all_rows:
-            issue_text = (d.get("issue") or "").strip()
-            svc_color_csv = d.get("svc_color") or ""
-            drop_color    = d.get("drop_color") or ""
-            expected_s    = d.get("expected_splice") or ""
-            actual_s      = d.get("actual_splice") or ""
+    # Collect only the errors
+    error_rows = []
+    for d in rows_source:
+        issue_text = (d.get("issue") or "").strip()
+        if not issue_text:
+            continue
+        svc_color_csv = d.get("svc_color") or ""
+        drop_color    = d.get("drop_color") or ""
+        expected_s    = d.get("expected_splice") or ""
+        actual_s      = d.get("actual_splice") or ""
 
-            # robust OK: drop_color is in the parsed svc_color list
-            svc_color_list = [s.strip() for s in svc_color_csv.split(",") if s.strip()]
-            ok = (drop_color or "") in svc_color_list
-            issue_col = "✅" if ok and not issue_text else (f"❌ {issue_text}" if issue_text else "❌")
+        error_rows.append([
+            d.get("nid", ""),
+            f"❌ {issue_text}",
+            d.get("svc_id") or "(none)",
+            _maybe_emojiize_csv(svc_color_csv),
+            _maybe_emojiize_one(drop_color),
+            _maybe_emojiize_one(expected_s),
+            _maybe_emojiize_one(actual_s),
+        ])
 
-            # --- EMOJI colorization just for the log table ---
-            svc_color_out = _maybe_emojiize_csv(svc_color_csv)
-            drop_color_out = _maybe_emojiize_one(drop_color)
-            expected_out   = _maybe_emojiize_one(expected_s)
-            actual_out     = _maybe_emojiize_one(actual_s)
-
-            rows_for_table.append([
-                d.get("nid", ""),
-                issue_col,
-                d.get("svc_id") or "(none)",
-                svc_color_out,
-                drop_color_out,
-                expected_out,
-                actual_out,
-            ])
-
-        # Bannered aligned block matching the headers; prefix each data line with [NID Issues]
-        logger.info("===== [NID Issues] =====")
-        for row, line in zip(rows_for_table, format_table_lines(headers, rows_for_table)):
-            issue_cell = str(row[1] or "")
-            (logger.error if issue_cell.startswith("❌") else logger.info)(f"[NID Issues] {line}")
-        logger.info("===== End [NID Issues] =====")
-
-
-        # Error-only block (same headers) — also emoji-ized and tagged
-        error_rows = []
-        for d in all_rows:
-            issue_text = (d.get("issue") or "").strip()
-            if issue_text:
-                svc_color_csv = d.get("svc_color") or ""
-                drop_color    = d.get("drop_color") or ""
-                expected_s    = d.get("expected_splice") or ""
-                actual_s      = d.get("actual_splice") or ""
-
-                error_rows.append([
-                    d.get("nid", ""),
-                    f"❌ {issue_text}",
-                    d.get("svc_id") or "(none)",
-                    _maybe_emojiize_csv(svc_color_csv),
-                    _maybe_emojiize_one(drop_color),
-                    _maybe_emojiize_one(expected_s),
-                    _maybe_emojiize_one(actual_s),
-                ])
-
-        if error_rows:
-            logger.error(f"==== [NID Issues] Errors ({len(error_rows)}) ====")
-            for line in format_table_lines(headers, error_rows):
-                logger.error(f"[NID Issues] {line}")
-            logger.info("==== End [NID Issues] Errors ====")
-
-    # --- Mirror table to log (ASCII) ---
-    _force_debug = bool(getattr(modules.config, "LOG_NID_DEBUG", False))
-    _do_mirror   = bool(getattr(modules.config, "LOG_NID_SHEET_TO_LOG", False))
-    _include_ok  = bool(getattr(modules.config, "LOG_NID_MIRROR_INCLUDE_OK", False))
-
-    if (_detail == "INFO") or _force_debug or _do_mirror:
-        _level = _logging.DEBUG if (_force_debug or _detail == "DEBUG") else _logging.INFO
-
-        # Decide which rows to print in the ASCII mirror:
-        rows_dicts = nid_issues or []
-        if _include_ok and all_rows:
-            rows_dicts = all_rows
-
-        rows = []
-        for d in rows_dicts:
-            issue_text = (d.get('issue', '') or '').strip()
-            # compute ok same way for consistency
-            svc_color_list = [s.strip() for s in (d.get("svc_color") or "").split(",") if s.strip()]
-            ok = (d.get("drop_color") or "") in svc_color_list
-            issue_out  = f"❌ {issue_text}" if issue_text else ("✅" if ok else "❌")
-
-            rows.append([
-                d.get('nid',''),
-                issue_out,
-                (d.get('svc_id') or '(none)'),
-                d.get('svc_color',''),
-                d.get('drop_color',''),
-                d.get('expected_splice',''),
-                d.get('actual_splice',''),
-            ])       
-        for line in format_table_lines(headers, rows):
+    if error_rows:
+        logger.error(f"==== [NID Issues] Errors ({len(error_rows)}) ====")
+        for line in format_table_lines(headers, error_rows):
             logger.error(f"[NID Issues] {line}")
-        
+        logger.info("==== End [NID Issues] Errors ====")
+
     apply_borders(ws)
 
 

@@ -148,32 +148,120 @@ def find_conduits_without_distribution() -> List[dict]:
 # ---------------------------------------------
 # Rule: Underground DF must have conduit below
 # ---------------------------------------------
-def find_distributions_without_conduit() -> List[dict]:
+
+
+def find_distributions_without_conduit(tolerance_ft: float | None = None) -> List[dict]:
     """
-    For each underground Distribution, require at least one conduit vertex within THRESHOLD_M
-    of any vertex of the distribution geometry. If none, flag it.
+    For each underground Distribution, require at least one conduit segment within tolerance
+    of any vertex of the distribution geometry. Uses point-to-segment distance (like the
+    vault rule) to avoid false negatives when vertices don't line up exactly.
+
+    Returns rows:
+      { "Distribution ID": , "Vetro ID": , "Issue": "No Conduit under distribution" }
     """
+    from math import cos, radians, sqrt
+
     conduits = _load_conduits()
-    conduit_vertices = _collect_conduit_vertices(conduits)
+    ug_dists = _load_underground_distributions_full()
+
+    # Allow an override, else fall back to the global threshold (~3 ft)
+    tol_m = (float(tolerance_ft) / M_TO_FT) if tolerance_ft is not None else THRESHOLD_M
+
+    def _ptseg_distance_m(p: Tuple[float, float], a: Tuple[float, float], b: Tuple[float, float]) -> float:
+        """Approximate point-to-segment distance in meters via local equirectangular projection."""
+        plat, plon = p
+        alat, alon = a
+        blat, blon = b
+
+        lat0 = (plat + alat + blat) / 3.0
+        m_per_deg_lat = 111320.0
+        m_per_deg_lon = 111320.0 * cos(radians(lat0))
+
+        ax, ay = alon * m_per_deg_lon, alat * m_per_deg_lat
+        bx, by = blon * m_per_deg_lon, blat * m_per_deg_lat
+        px, py = plon * m_per_deg_lon, plat * m_per_deg_lat
+
+        vx, vy = (bx - ax), (by - ay)
+        wx, wy = (px - ax), (py - ay)
+
+        denom = (vx * vx + vy * vy)
+        if denom <= 0.0:  # degenerate segment
+            dx, dy = (px - ax), (py - ay)
+            return sqrt(dx * dx + dy * dy)
+
+        t = (wx * vx + wy * vy) / denom
+        if t < 0.0:
+            cx, cy = ax, ay
+        elif t > 1.0:
+            cx, cy = bx, by
+        else:
+            cx, cy = (ax + t * vx), (ay + t * vy)
+
+        dx, dy = (px - cx), (py - cy)
+        return sqrt(dx * dx + dy * dy)
 
     out: List[dict] = []
-    for df in _load_underground_distributions_full():
+
+    for df in ug_dists:
         has_touch = False
-        for seg in df["segments"]:
-            for lat, lon in seg:
-                if any(haversine(lat, lon, clat, clon) <= THRESHOLD_M
-                       for (clat, clon) in conduit_vertices):
-                    has_touch = True
+
+        # For every vertex in the DF geometry, check distance to nearest conduit *segment*
+        for df_seg in df.get("segments", []):
+            for (dlat, dlon) in df_seg:
+                # Early exit as soon as we find any close segment
+                for c in conduits:
+                    for cseg in c.get("segments", []):
+                        if len(cseg) < 2:
+                            continue
+                        for i in range(1, len(cseg)):
+                            if _ptseg_distance_m((dlat, dlon), cseg[i - 1], cseg[i]) <= tol_m:
+                                has_touch = True
+                                break
+                        if has_touch:
+                            break
+                    if has_touch:
+                        break
+                if has_touch:
                     break
             if has_touch:
                 break
+
         if not has_touch:
             out.append({
                 "Distribution ID": df.get("id", ""),
                 "Vetro ID": df.get("vetro_id", ""),
                 "Issue": "No Conduit under distribution",
             })
+
     return out
+
+
+# def find_distributions_without_conduit() -> List[dict]:
+#     """
+#     For each underground Distribution, require at least one conduit vertex within THRESHOLD_M
+#     of any vertex of the distribution geometry. If none, flag it.
+#     """
+#     conduits = _load_conduits()
+#     conduit_vertices = _collect_conduit_vertices(conduits)
+
+#     out: List[dict] = []
+#     for df in _load_underground_distributions_full():
+#         has_touch = False
+#         for seg in df["segments"]:
+#             for lat, lon in seg:
+#                 if any(haversine(lat, lon, clat, clon) <= THRESHOLD_M
+#                        for (clat, clon) in conduit_vertices):
+#                     has_touch = True
+#                     break
+#             if has_touch:
+#                 break
+#         if not has_touch:
+#             out.append({
+#                 "Distribution ID": df.get("id", ""),
+#                 "Vetro ID": df.get("vetro_id", ""),
+#                 "Issue": "No Conduit under distribution",
+#             })
+#     return out
 
 # ------------------------------------------------------
 # Rule: Conduit Type must be one of the allowed values
@@ -197,35 +285,77 @@ def find_conduit_type_issues() -> List[dict]:
     return out
 
 
-def find_conduits_without_distribution() -> List[dict]:
+def find_conduits_without_distribution(tolerance_ft: float | None = None) -> List[dict]:
     """
-    For each conduit (any type), require at least one *underground* Distribution
-    vertex within THRESHOLD_M of any conduit vertex. If none, flag the conduit.
+    For each Conduit, require at least one underground Distribution segment within tolerance
+    of any vertex of the conduit geometry. Uses point-to-segment distance for robustness.
 
     Returns rows:
-      {
-        "Conduit ID": ,
-        "Conduit Vetro ID": ,
-        "Issue": "No Distribution fiber on conduit"
-      }
+      { "Conduit ID": , "Conduit Vetro ID": , "Issue": "No Distribution fiber on conduit" }
     """
-    conduits = _load_conduits()
+    from math import cos, radians, sqrt
 
-    # Collect all UNDERGROUND distribution vertices once
+    conduits = _load_conduits()
     ug_dists = _load_underground_distributions_full()
-    dist_vertices: List[Tuple[float, float]] = []
+
+    # Pre-collect DF segments to avoid recomputing
+    df_segments: List[List[Tuple[float, float]]] = []
     for df in ug_dists:
         for seg in df.get("segments", []):
-            dist_vertices.extend(seg)
+            if len(seg) >= 2:
+                df_segments.append(seg)
+
+    tol_m = (float(tolerance_ft) / M_TO_FT) if tolerance_ft is not None else THRESHOLD_M
+
+    def _ptseg_distance_m(p: Tuple[float, float], a: Tuple[float, float], b: Tuple[float, float]) -> float:
+        """Approximate point-to-segment distance in meters via local equirectangular projection."""
+        plat, plon = p
+        alat, alon = a
+        blat, blon = b
+
+        lat0 = (plat + alat + blat) / 3.0
+        m_per_deg_lat = 111320.0
+        m_per_deg_lon = 111320.0 * cos(radians(lat0))
+
+        ax, ay = alon * m_per_deg_lon, alat * m_per_deg_lat
+        bx, by = blon * m_per_deg_lon, blat * m_per_deg_lat
+        px, py = plon * m_per_deg_lon, plat * m_per_deg_lat
+
+        vx, vy = (bx - ax), (by - ay)
+        wx, wy = (px - ax), (py - ay)
+
+        denom = (vx * vx + vy * vy)
+        if denom <= 0.0:
+            dx, dy = (px - ax), (py - ay)
+            return sqrt(dx * dx + dy * dy)
+
+        t = (wx * vx + wy * vy) / denom
+        if t < 0.0:
+            cx, cy = ax, ay
+        elif t > 1.0:
+            cx, cy = bx, by
+        else:
+            cx, cy = (ax + t * vx), (ay + t * vy)
+
+        dx, dy = (px - cx), (py - cy)
+        return sqrt(dx * dx + dy * dy)
 
     out: List[dict] = []
+
     for c in conduits:
         has_touch = False
-        for seg in c.get("segments", []):
-            for lat, lon in seg:
-                # touch if any UG dist vertex is within tolerance
-                if any(haversine(lat, lon, dlat, dlon) <= THRESHOLD_M for (dlat, dlon) in dist_vertices):
-                    has_touch = True
+
+        for cseg in c.get("segments", []):
+            for (clat, clon) in cseg:
+                # Compare this conduit vertex to *distribution segments*
+                for dfseg in df_segments:
+                    for i in range(1, len(dfseg)):
+                        if _ptseg_distance_m((clat, clon), dfseg[i - 1], dfseg[i]) <= tol_m:
+                            has_touch = True
+                            break
+                    if has_touch:
+                        break
+                if has_touch:
                     break
             if has_touch:
                 break
@@ -236,7 +366,51 @@ def find_conduits_without_distribution() -> List[dict]:
                 "Conduit Vetro ID": c.get("vetro_id", ""),
                 "Issue": "No Distribution fiber on conduit",
             })
+
     return out
+
+
+
+# def find_conduits_without_distribution() -> List[dict]:
+#     """
+#     For each conduit (any type), require at least one *underground* Distribution
+#     vertex within THRESHOLD_M of any conduit vertex. If none, flag the conduit.
+
+#     Returns rows:
+#       {
+#         "Conduit ID": ,
+#         "Conduit Vetro ID": ,
+#         "Issue": "No Distribution fiber on conduit"
+#       }
+#     """
+#     conduits = _load_conduits()
+
+#     # Collect all UNDERGROUND distribution vertices once
+#     ug_dists = _load_underground_distributions_full()
+#     dist_vertices: List[Tuple[float, float]] = []
+#     for df in ug_dists:
+#         for seg in df.get("segments", []):
+#             dist_vertices.extend(seg)
+
+#     out: List[dict] = []
+#     for c in conduits:
+#         has_touch = False
+#         for seg in c.get("segments", []):
+#             for lat, lon in seg:
+#                 # touch if any UG dist vertex is within tolerance
+#                 if any(haversine(lat, lon, dlat, dlon) <= THRESHOLD_M for (dlat, dlon) in dist_vertices):
+#                     has_touch = True
+#                     break
+#             if has_touch:
+#                 break
+
+#         if not has_touch:
+#             out.append({
+#                 "Conduit ID": c.get("id", ""),
+#                 "Conduit Vetro ID": c.get("vetro_id", ""),
+#                 "Issue": "No Distribution fiber on conduit",
+#             })
+#     return out
 
 
 def run_all_conduit_checks() -> dict[str, List[dict]]:
