@@ -79,7 +79,7 @@ from modules.simple_scripts.pole_issues import (
 )
 
 from modules.hard_scripts.distribution_walker import find_deep_distribution_mismatches
-from modules.simple_scripts.conduit_rules import run_all_conduit_checks
+from modules.simple_scripts.conduit_rules import run_all_conduit_checks, emit_conduit_logs
 from modules.simple_scripts.vault_rules import run_all_vault_checks
 
 
@@ -236,6 +236,7 @@ def main(data_dir=None, gui_out_path=None):
 
         # Conduit + Vault rule checks and sheets
         conduit_results = run_all_conduit_checks()
+        emit_conduit_logs()
         vault_results   = run_all_vault_checks()
         # DEBUG: dump only the two vaults we care about into DATA_DIR/_debug_vaults_missing.csv
         from modules import config

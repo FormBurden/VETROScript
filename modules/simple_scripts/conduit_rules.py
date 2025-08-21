@@ -436,3 +436,112 @@ def find_vaults_missing_conduit(tolerance_ft: float | None = None) -> List[dict]
             })
 
     return out
+
+def emit_conduit_logs(emit_info: bool = True) -> None:
+    """
+    Emit log lines for all Conduit checks (mirror of the Excel 'Conduit' sheet),
+    and also an Overview of every conduit feature (attributes + optional path).
+
+    Does not alter any existing logic — only prints to the log using current
+    config (LOG_DETAIL, LOG_INCLUDE_WALK_PATH).
+
+    Overview columns:
+      Conduit ID | Conduit Vetro ID | Conduit Type | #Segments | #Vertices | Path (optional)
+    Issue groups logged at ERROR level:
+      • Distribution Without Conduit
+      • Conduit Without Underground Distribution
+      • Conduit Type Issues
+      • Vaults Missing Conduit
+    """
+    import logging
+    import modules.config as cfg
+    from modules.basic.log_configs import format_table_lines
+
+    log = logging.getLogger(__name__)
+
+    # Respect LOG_DETAIL for how "chatty" the overview is
+    detail = str(getattr(cfg, "LOG_DETAIL", "DEBUG")).upper()
+    info_emit = log.debug if detail == "DEBUG" else log.info
+
+    # ----------------------------
+    # A) Overview of ALL conduits
+    # ----------------------------
+    headers = ["Conduit ID", "Conduit Vetro ID", "Conduit Type", "#Segments", "#Vertices", "Path"]
+    rows: list[list[str]] = []
+
+    def _path_preview(segments):
+        """Compact path preview per segment: first, maybe one middle, and last point."""
+        if not bool(getattr(cfg, "LOG_INCLUDE_WALK_PATH", False)):
+            return ""
+        previews = []
+        for seg in (segments or []):
+            if not seg:
+                continue
+            pts = []
+            # first
+            pts.append(f"{seg[0][0]:.6f},{seg[0][1]:.6f}")
+            # maybe one middle point (avoid huge prints)
+            if len(seg) > 2:
+                mid = seg[len(seg)//2]
+                pts.append(f"{mid[0]:.6f},{mid[1]:.6f}")
+            # last
+            if len(seg) > 1:
+                pts.append(f"{seg[-1][0]:.6f},{seg[-1][1]:.6f}")
+            previews.append(" → ".join(pts))
+        return " | ".join(previews)
+
+    for c in _load_conduits():
+        segs = c.get("segments", [])
+        seg_count = len(segs)
+        vtx_count = sum(len(s) for s in segs)
+        rows.append([
+            c.get("id", ""),
+            c.get("vetro_id", ""),
+            c.get("type", ""),
+            str(seg_count),
+            str(vtx_count),
+            _path_preview(segs),
+        ])
+
+    if rows and emit_info:
+        info_emit("===== [Conduit] Overview (all features) =====")
+        for line in format_table_lines(headers, rows, max_col_widths=[32, 36, 24, 9, 9, 120]):
+            info_emit(f"[Conduit] {line}")
+        info_emit("===== End [Conduit] Overview =====")
+
+    # -----------------------------------
+    # B) Issue tables (mirror Excel bits)
+    # -----------------------------------
+    def _issue_table(title: str, headers: list[str], items: list[dict] | None):
+        if not items:
+            return
+        lines = format_table_lines(headers, [[str(it.get(h, "")) for h in headers] for it in items])
+        log.error(f"==== {title} ({len(items)}) ====")
+        for ln in lines:
+            log.error(f"[Conduit Issues] {ln}")
+        log.info(f"==== End {title} ====")
+
+    # Use your existing finders (no logic changes)
+    results = run_all_conduit_checks()  # df_missing_conduit, conduit_missing_distribution, type_issues  :contentReference[oaicite:1]{index=1}
+    vault_missing = find_vaults_missing_conduit()  # {"Vault Vetro ID", "Issue"} rows  :contentReference[oaicite:2]{index=2}
+
+    _issue_table(
+        "Distribution Without Conduit",
+        ["Distribution ID", "Vetro ID", "Issue"],
+        results.get("df_missing_conduit"),
+    )
+    _issue_table(
+        "Conduit Without Underground Distribution",
+        ["Conduit ID", "Conduit Vetro ID", "Issue"],
+        results.get("conduit_missing_distribution"),
+    )
+    _issue_table(
+        "Conduit Type Issues",
+        ["Conduit ID", "Conduit Vetro ID", "Conduit Type", "Issue"],
+        results.get("type_issues"),
+    )
+    _issue_table(
+        "Vaults Missing Conduit",
+        ["Vault Vetro ID", "Issue"],
+        vault_missing,
+    )
