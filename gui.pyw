@@ -143,6 +143,59 @@ class SettingsDialog(tk.Toplevel):
         self.grab_release()
         self.destroy()
 
+
+# --- NEW: persist GUI Settings in user_prefs.json ----------------------------
+def _prefs_json_path() -> str:
+    """
+    Returns the full path to user_prefs.json.
+    Reuses modules.config.USER_PREFS_JSON if present; otherwise, keeps
+    your current file next to the GUI (backward-compatible).
+    """
+    import os, modules.config
+    # If your project already defines USER_PREFS_JSON, use it
+    p = getattr(modules.config, "USER_PREFS_JSON", None)
+    if isinstance(p, str) and p.strip():
+        return p
+
+    # Fallback to a file near the executable / script, same as before
+    here = os.path.dirname(__file__)
+    return os.path.join(here, "user_prefs.json")
+
+
+def _load_prefs_json() -> dict:
+    """Load user_prefs.json (returns {} if missing or invalid)."""
+    import json, os
+    path = _prefs_json_path()
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def _save_prefs_json(prefs: dict) -> None:
+    """Write user_prefs.json atomically (best-effort)."""
+    import json, os, tempfile
+    path = _prefs_json_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # atomic-ish write
+    fd, tmp = tempfile.mkstemp(prefix="._prefs_", suffix=".json",
+                               dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(prefs, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, path)
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+
+
 class InstructionsDialog(tk.Toplevel):
     """
     Simple modal window to display project instructions.
@@ -334,76 +387,21 @@ class PeerCheckGUI(tk.Tk):
         self.status_var = tk.StringVar(value="Ready.")
         ttk.Label(self, textvariable=self.status_var).grid(row=row, column=0, columnspan=3, sticky="w", **pad)
 
+    # gui.pyw — early in app startup (e.g., end of PeerCheckGUI.__init__)
+    def _apply_settings_from_prefs_on_startup():
+        import modules.config as cfg
+        prefs = _load_prefs_json()
+        settings = prefs.get("settings") or {}
+        # only set known, safe keys to avoid surprises
+        for k, v in settings.items():
+            try:
+                setattr(cfg, k, v)
+            except Exception:
+                pass
 
-    # def _create_widgets(self):
-    #     pad = {"padx": 12, "pady": 8}
+    # call this once during init:
+    _apply_settings_from_prefs_on_startup()
 
-    #     # --- Data Folder ---
-    #     row = 0
-    #     ttk.Label(self, text="Data Folder").grid(row=row, column=0, sticky="w", **pad)
-    #     # Prefill from saved "data" dir, fallback to current modules.config.DATA_DIR
-    #     last_data = modules.config.get_last_dir("data", default=str(getattr(modules.config, "DATA_DIR", "")))
-    #     self.data_dir_var = tk.StringVar(value=last_data)
-    #     self.data_dir_entry = ttk.Entry(self, textvariable=self.data_dir_var, width=70)
-    #     self.data_dir_entry.grid(row=row, column=1, sticky="w", **pad)
-    #     ttk.Button(self, text="Browse…", command=self._browse_data_dir).grid(row=row, column=2, **pad)
-
-    #     # --- Output Folder ---
-    #     row += 1
-    #     ttk.Label(self, text="Output Folder:").grid(row=row, column=0, sticky="w", **pad)
-    #     # Prefill from saved "output" dir, fallback to CWD
-    #     last_out = modules.config.get_last_dir("output", default=os.path.abspath(os.getcwd()))
-    #     self.out_dir_var = tk.StringVar(value=last_out)
-    #     self.out_dir_entry = ttk.Entry(self, textvariable=self.out_dir_var, width=70)
-    #     self.out_dir_entry.grid(row=row, column=1, sticky="w", **pad)
-    #     ttk.Button(self, text="Browse…", command=self._browse_out_dir).grid(row=row, column=2, **pad)
-
-    #     # --- Bottom row: Settings (left), Instructions (center), (?)+Logs (right), Run (far-right) ---
-    #     row += 1
-    #     btn_frame = ttk.Frame(self)
-    #     btn_frame.grid(row=row, column=0, columnspan=3, sticky="ew", **pad)
-
-    #     btn_frame.columnconfigure(1, weight=1)
-
-    #     style = ttk.Style(self)
-    #     style.configure("Bold.TButton", font=("", 10, "bold"))
-    #     style.configure("Help.TLabel", foreground="#666")
-
-    #     # Left: Settings
-    #     self.settings_btn = ttk.Button(btn_frame, text="Settings…", command=self._open_settings)
-    #     self.settings_btn.grid(row=0, column=0, sticky="w")
-
-    #     # Center: Instructions
-    #     self.instructions_btn = ttk.Button(btn_frame, text="Instructions", style="Bold.TButton", command=self._open_instructions)
-    #     self.instructions_btn.grid(row=0, column=1)
-
-    #     # Right: ( ? ) + Logs
-    #     right_group = ttk.Frame(btn_frame)
-    #     right_group.grid(row=0, column=2, sticky="e")
-    #     self.logs_help = ttk.Label(right_group, text="(?)", style="Help.TLabel", cursor="question_arrow")
-    #     self.logs_help.grid(row=0, column=0, sticky="e", padx=(0, 6))
-    #     self.include_logs_var = tk.BooleanVar(value=bool(getattr(modules.config, "WRITE_LOG_FILE", True)))
-    #     self.logs_ck = ttk.Checkbutton(right_group, text="Logs", variable=self.include_logs_var)
-    #     self.logs_ck.grid(row=0, column=1, sticky="e")
-
-    #     HoverTooltip(
-    #         self.logs_help,
-    #         text=(
-    #             "When checked, a separate log file is created. This log shows the exact path of each error "
-    #             "found in the Excel document, as well as how the script aggregates the data—useful for verifying "
-    #             "that it’s working correctly. You can customize what details appear in the logs by adjusting the settings."
-    #         ),
-    #         wraplength_px=360
-    #     )
-
-    #     # Far-right: Run
-    #     self.run_btn = ttk.Button(btn_frame, text="Run Checks", command=self._run)
-    #     self.run_btn.grid(row=0, column=3, sticky="e")
-
-    #     # Status line
-    #     row += 1
-    #     self.status_var = tk.StringVar(value="Ready.")
-    #     ttk.Label(self, textvariable=self.status_var).grid(row=row, column=0, columnspan=3, sticky="w", **pad)
 
     # --- callbacks ---
     def _browse_out_dir(self):
