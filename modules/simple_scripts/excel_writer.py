@@ -7,9 +7,6 @@ from openpyxl.utils import get_column_letter
 import pandas as pd
 import re
 import modules.config
-import glob
-
-
 
 logger = logging.getLogger(__name__)
 
@@ -243,20 +240,15 @@ def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
       - nap_id (str)
       - dist_id (str)
       - svc_id (str)
-      - found_drop_color (str)   # for 'Drop color not expected at NAP'
-      - drop_color (str)         # for 'Service Location splice color mismatch'
+      - found_drop_color (str)  # for 'Drop color not expected at NAP'
+      - drop_color (str)        # for 'Service Location splice color mismatch'
       - svc_colors (list[str])
       - expected_colors (list[str])
-      - found_drops (list[dict]) # {drop_id, color, distance_m}
+      - found_drops (list[dict])  # {drop_id, color, distance_m}
       - missing_colors (list[str])
       - issue (str)
-    """
-    from openpyxl.styles import Font, Alignment
-    import logging
-    import modules.config
+    """    
     from modules.basic.log_configs import format_table_lines
-
-    logger = logging.getLogger(__name__)
 
     # If there are no issues and we’re not in “show all” mode, do not create the sheet.
     if not issues and not getattr(modules.config, "SHOW_ALL_SHEETS", False):
@@ -268,16 +260,8 @@ def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
 
     # 2) Header row
     headers = [
-        'Path',
-        'NAP ID',
-        'Dist. ID',
-        'Service Location ID',
-        'Drop Color',
-        'SL Colors',
-        'Expected Colors',
-        'Missing Colors',
-        'Found Drops',
-        'Issue',
+        'Path', 'NAP ID', 'Dist. ID', 'Service Location ID', 'Drop Color',
+        'SL Colors', 'Expected Colors', 'Missing Colors', 'Found Drops', 'Issue',
     ]
     for c, title in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=c, value=title)
@@ -328,13 +312,11 @@ def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
         row_idx += 1
 
     # 5) Error-only logging (no Excel mirror)
-    from modules.basic.log_configs import format_table_lines
     if rows_for_log:
         logger.error(f"==== [Distribution and NAP Walker] Errors ({len(rows_for_log)}) ====")
         for line in format_table_lines(headers, rows_for_log):
             logger.error(f"[Distribution and NAP Walker] {line}")
         logger.info("==== End [Distribution and NAP Walker] Errors ====")
-
 
     apply_borders(ws)
 
@@ -525,13 +507,8 @@ def write_drop_issues_sheet(wb, mismatches_or_service_coords, drop_coords=None, 
       • Legacy (your local main.py): write_drop_issues_sheet(wb, service_coords, drop_coords, combined)
 
     Only the IDs in `mismatches` / `combined` are used to render this sheet.
-    """
-    from openpyxl.styles import Font, Alignment
-    import logging
-    import modules.config
+    """    
     from modules.basic.log_configs import format_table_lines
-
-    logger = logging.getLogger(__name__)
 
     # --- Back-compat adapter ---
     # If called with 4 args, `combined` is the list/dict we actually need.
@@ -795,9 +772,7 @@ def write_footage_issues_sheet(wb, mismatches):
     If one side is empty (and SHOW_ALL_SHEETS is False), it is not drawn;
     the remaining block starts at column A.
     """
-    from openpyxl.styles import Alignment, Font
     from modules.simple_scripts.footage_issues import find_overlength_drop_cables
-    import modules.config
 
     ws = wb.create_sheet(title='Footage Issues')
     ws.freeze_panes = "A3"
@@ -854,12 +829,7 @@ def write_footage_issues_sheet(wb, mismatches):
 
 
 def write_nid_issues(wb, nid_issues: list):
-    from openpyxl.styles import Alignment, Font
-    import logging
-    import modules.config
     from modules.basic.log_configs import format_table_lines
-
-    logger = logging.getLogger(__name__)
 
     # Create sheet
     ws = wb.create_sheet(title='NID Issues')
@@ -868,20 +838,15 @@ def write_nid_issues(wb, nid_issues: list):
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=7)
     banner = ws.cell(
         row=1, column=1,
-        value='Checks if Splice Colors mismatch; Service Locations have correct 1.1, 1.2, etc. attributes.'
+        value='Checks if Splice Colors mismatch; Service Locations have correct 1.1, 1.2, etc.'
     )
     banner.alignment = Alignment(horizontal='center')
     banner.font = Font(bold=True)
 
     # Column headers (row 2)
     headers = [
-        'NID ID',
-        'Issue',
-        'Service Location ID',
-        'Service Location Color',
-        'Drop Color',
-        'Expected Splice',
-        'Actual Splice',
+        'NID ID', 'Issue', 'Service Location ID', 'Service Location Color',
+        'Drop Color', 'Expected Splice', 'Actual Splice',
     ]
     for c, t in enumerate(headers, start=1):
         cell = ws.cell(row=2, column=c, value=t)
@@ -913,9 +878,8 @@ def write_nid_issues(wb, nid_issues: list):
     # Emoji color helpers (used only for log prettiness when LOG_COLOR_MODE == 'EMOJI')
     def _color_emoji(name: str) -> str:
         mapping = {
-            "Blue": "", "Orange": "", "Green": "", "Brown": "",
-            "Slate": "◾️", "White": "⬜", "Red": "", "Black": "⬛",
-            "Yellow": "", "Violet": "", "Rose": "", "Aqua": "",
+            "Blue": "", "Orange": "", "Green": "", "Brown": "", "Slate": "◾️", "White": "⬜",
+            "Red": "", "Black": "⬛", "Yellow": "", "Violet": "", "Rose": "", "Aqua": "",
         }
         return mapping.get((name or "").strip(), "◻️")
 
@@ -947,10 +911,9 @@ def write_nid_issues(wb, nid_issues: list):
         if not issue_text:
             continue
         svc_color_csv = d.get("svc_color") or ""
-        drop_color    = d.get("drop_color") or ""
-        expected_s    = d.get("expected_splice") or ""
-        actual_s      = d.get("actual_splice") or ""
-
+        drop_color = d.get("drop_color") or ""
+        expected_s = d.get("expected_splice") or ""
+        actual_s = d.get("actual_splice") or ""
         error_rows.append([
             d.get("nid", ""),
             f"❌ {issue_text}",
@@ -973,22 +936,20 @@ def write_nid_issues(wb, nid_issues: list):
 def write_service_location_attr_issues(wb, records):
     """
     Service Location Issues sheet.
+
     Layout (unchanged from your reverted version), with:
       • Issue column text = "Missing Attribute"
       • Attribute cells show "Missing" or "✅"
       • NEW: freeze header row; center columns starting at col 3
       • Logging mirror restored
     """
-    from openpyxl.styles import Font, Alignment
-    import logging, modules.config
 
-    logger = logging.getLogger(__name__)
     ws = wb.create_sheet(title='Service Location Issues')
 
     # Required attributes (same list you were using)
     attrs = [
-        "Build Type", "Building Type", "Drop Type",
-        "NAP #", "NAP Location", "Loose Tube", "Splice Colors",
+        "Build Type", "Building Type", "Drop Type", "NAP #",
+        "NAP Location", "Loose Tube", "Splice Colors",
     ]
 
     # Build SL → per-attr status map
@@ -1032,10 +993,11 @@ def write_service_location_attr_issues(wb, records):
             ws.cell(row=r, column=col).alignment = center
 
     # Logging mirror (restored)
-    if getattr(modules.config, "LOG_MIRROR_SHEETS", False) and getattr(modules.config, "LOG_SVCLOC_SHEET_TO_LOG", False):       
+    if getattr(modules.config, "LOG_MIRROR_SHEETS", False) and getattr(modules.config, "LOG_SVCLOC_SHEET_TO_LOG", False):
         logger.info(" | ".join(headers))
         for row in rows_written:
             logger.error(" | ".join(str(v) if v is not None else "" for v in row))
+
     apply_borders(ws)
 
 
@@ -1049,13 +1011,11 @@ def write_nap_issues_sheet(wb, nap_mismatches, id_format_issues):
     If a block has no rows (and SHOW_ALL_SHEETS is False), it is omitted entirely.
     Blocks are laid out left→right with a 1-column gutter between them.
     """
-    from openpyxl.styles import Font, Alignment
     from modules.simple_scripts.nap_rules import scan_nap_spec_warnings
-    import logging, modules.config
 
-    logger = logging.getLogger(__name__)
     ws = wb.create_sheet(title="NAP Issues")
     ws.freeze_panes = "A3"  # lock headers
+
     bold = Font(bold=True)
     center = Alignment(horizontal='center')
 
@@ -1069,6 +1029,7 @@ def write_nap_issues_sheet(wb, nap_mismatches, id_format_issues):
     show_all = bool(getattr(modules.config, "SHOW_ALL_SHEETS", False))
 
     # --- Build rows for each logical block ---
+
     # A) NAP Mismatches
     a_headers = ["NAP ID", "Loose Tube", "Missing Indices", "Missing Colors", "Issue"]
     a_rows = []
@@ -1156,19 +1117,16 @@ def write_nap_issues_sheet(wb, nap_mismatches, id_format_issues):
         for line in format_table_lines(a_headers, a_rows):
             logger.error(f"[NAP Mismatches] {line}")
         logger.info("==== End [NAP Mismatches] Errors ====")
-
     if b_rows:
         logger.error(f"==== [NAP Naming Issues] Errors ({len(b_rows)}) ====")
         for line in format_table_lines(b_headers, b_rows):
             logger.error(f"[NAP Naming Issues] {line}")
         logger.info("==== End [NAP Naming Issues] Errors ====")
-
     if c_rows:
         logger.error(f"==== [Warnings (NAP Specs)] Errors ({len(c_rows)}) ====")
         for line in format_table_lines(c_headers, c_rows):
             logger.error(f"[Warnings (NAP Specs)] {line}")
         logger.info("==== End [Warnings (NAP Specs)] Errors ====")
-
 
     apply_borders(ws)
 
