@@ -24,7 +24,7 @@ from modules.simple_scripts.nap_rules import load_nap_specs, find_nap_id_format_
 from modules.simple_scripts.pole_issues import find_power_pole_issues, load_power_poles, load_aerial_distributions, load_messenger_wire
 from modules.simple_scripts.conduit_rules import run_all_conduit_checks
 from modules.simple_scripts.vault_rules import run_all_vault_checks
-
+from modules.simple_scripts.footage_issues import find_missing_distribution_footage, find_overlength_drop_cables
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +73,11 @@ def collect_network_statistics():
     aerial_slack_issues      = len(invalid_slack_loops(pole_coords, nap_coords, slack_coords))
     tail_end_slack_issues    = len(find_distribution_end_tail_issues())
 
-    # Footage issues (moved)
-    footage_issues = len(find_missing_distribution_footage())
+    # Footage issues (Distribution Note missing/invalid + Drops > 250 ft)
+    footage_issues = (
+        len(find_missing_distribution_footage())
+        + len(find_overlength_drop_cables(limit_ft=250.0) or [])
+    )
 
     # NID & Service-Location attribute issues
     nid_drop_issues = len(find_nid_mismatches())
