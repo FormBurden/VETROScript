@@ -113,7 +113,7 @@ class SettingsDialog(tk.Toplevel):
             "LOG_DROP_DEBUG": True,
             "LOG_MIRROR_SHEETS": True,
             "LOG_SLACK_LOOP_SHEET_TO_LOG": True,
-            "LOG_NID_SHEET_TO_LOG": True,
+            "LOG_NID_SHEET_TO_LOG": False,
             "LOG_DETAIL": "INFO",
             "LOG_COLOR_MODE": "OFF",
         }
