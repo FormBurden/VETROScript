@@ -4,8 +4,7 @@ import os
 import sys
 import traceback
 import tkinter as tk
-from tkinter import ttk
-from tkinter import filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox
 
 # Project imports
 import modules.config
@@ -133,7 +132,7 @@ class SettingsDialog(tk.Toplevel):
                 self._bool_vars[k].set(bool(v))
             elif k in self._choice_vars:
                 self._choice_vars[k].set(str(v).upper())
-        self.var_log_include_walk_path.set(True)
+        self.var_log_include_walk_path.set(False)
 
     def _apply(self):
         # Push values back into modules.config
@@ -212,33 +211,6 @@ def _collect_current_settings_for_prefs() -> dict:
                 val = list(val)
             snap[key] = val
     return snap
-
-
-
-
-# def _collect_current_settings_for_prefs() -> dict:
-#     """
-#     Collect the subset of modules.config options that the Settings dialog exposes,
-#     so we can persist them into user_prefs.json.
-#     """
-#     import modules.config as cfg
-#     WHITELIST = [
-#         "SHOW_ALL_SHEETS",
-#         "LOG_SHOW_ABBREV_HEADER",
-#         "LOG_DETAIL",
-#         "OUTPUT_XLSX",
-#         "ID_COL",
-#         "LOG_ABBREV_HEADER_LINES",
-#         "PATTERNS",
-#     ]
-#     snap = {}
-#     for key in WHITELIST:
-#         if hasattr(cfg, key):
-#             val = getattr(cfg, key)
-#             if isinstance(val, tuple):
-#                 val = list(val)
-#             snap[key] = val
-#     return snap
 
 
 # --- NEW: persist GUI Settings in user_prefs.json ----------------------------
