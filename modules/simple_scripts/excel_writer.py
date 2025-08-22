@@ -8,14 +8,7 @@ import pandas as pd
 import re
 import modules.config
 import glob
-from collections import Counter
 
-from modules.simple_scripts.slack_loops import find_underground_slack_mismatches, find_slack_dist_mismatches
-from modules.simple_scripts.distribution import find_missing_distribution_footage
-from modules.simple_scripts.fiber_drop import find_missing_service_location_drops
-from modules.simple_scripts.footage_issues import find_overlength_drop_cables
-from modules.config import ID_COL
-from modules.simple_scripts.nap_rules import find_nap_drop_mismatches, find_nap_id_format_issues, scan_nap_spec_warnings
 
 
 logger = logging.getLogger(__name__)
@@ -186,13 +179,10 @@ def write_network_statistics(wb, stats):
     ws.cell(row=r, column=2, value=t3_joined)
     r += 1
 
-    issue_start_idx = r  # first issue row index
-
     # Issues (alphabetized)
     for label, val in issues_sorted:
         cell_label = ws.cell(row=r, column=1, value=label)
         cell_value = ws.cell(row=r, column=2, value=val)
-
         # Bold any issue row when count > 0
         if isinstance(val, int) and val > 0:
             cell_label.font = Font(bold=True)

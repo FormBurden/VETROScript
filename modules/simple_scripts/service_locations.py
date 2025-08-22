@@ -119,7 +119,7 @@ def check_service_location_attributes(service_locations_by_id_or_path, logger=No
       - "Value"
     """
     import json, os, re, logging
-    import modules
+    import modules.config
     from modules.basic.log_configs import log_abbrev_header, log_issue_header
     from modules.hard_scripts.distribution_walker import (
         get_walk_order_index_map, get_walk_paths_map
@@ -279,7 +279,7 @@ def check_all_service_location_attributes(log_debug: bool = True):
     Returns: list[dict] of missing-attribute rows (same schema as single-file variant).
     """
     import json, glob, re, logging
-    import modules
+    import modules.config
     from modules.basic.log_configs import log_abbrev_header, log_issue_header
     from modules.hard_scripts.distribution_walker import (
         get_walk_order_index_map, get_walk_paths_map
