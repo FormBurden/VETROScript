@@ -719,57 +719,322 @@ def _build_conduit_named_path(c: dict) -> list[str]:
     # Wrap to lines of <= 250 chars, only at the allowed separators
     return _wrap_path(chain, 250)
 
-# --- REPLACE the entire emit_conduit_logs() in modules/simple_scripts/conduit_rules.py ---
+
+def _build_conduit_path_tokens(c: dict) -> list[tuple[str, str, str]]:
+    """
+    Build a tokenized representation of the conduit Path for logging with type headers.
+
+    Returns a list of (sep, text, kind) where:
+      • sep  in {"", " > ", " -- ", " / "}   (separator printed *before* this token)
+      • text is the visible token text
+      • kind in {"DF","VAULT","NAP"}
+
+    Rules:
+      • Start at the first Vault vertex if present, else first vertex.
+      • At DF changes: emit (" > ", DFID, "DF").
+      • At a vertex with assets (vault/nap) in same DF segment:
+          - if first asset at this vertex and not a DF change: (" -- ", vault/nap, kind)
+          - if first asset and a DF just emitted: (" / ", vault/nap, kind)
+          - two assets at a vertex become: (" / ", "vault", "VAULT"), (" / ", "nap", "NAP")
+    """
+    verts: list[tuple[float,float]] = []
+    for seg in (c.get("segments") or []):
+        verts.extend(seg)
+    if not verts:
+        return []
+
+    vault_coords, vault_map = _load_vault_points_map()
+    nap_coords,   nap_map   = _load_nap_points_map()
+    df_segments              = _iter_df_segments_with_id()
+    tol_m                    = THRESHOLD_M
+
+    # Gather assets + DF at each vertex
+    per: list[dict] = []
+    for pt in verts:
+        v_id = ""; n_id = ""
+        # vault
+        for (vlat, vlon) in vault_coords:
+            if haversine(pt[0], pt[1], vlat, vlon) <= tol_m:
+                v_id = vault_map.get((vlat, vlon), "")
+                break
+        # nap
+        for (nlat, nlon) in nap_coords:
+            if haversine(pt[0], pt[1], nlat, nlon) <= tol_m:
+                n_id = nap_map.get((nlat, nlon), "")
+                break
+        df_id = _nearest_df_id_for_point(pt, df_segments, tol_m)
+        per.append({"pt": pt, "vault": v_id, "nap": n_id, "df": df_id})
+
+    # start at first vault if any
+    start = 0
+    for i, a in enumerate(per):
+        if a["vault"]:
+            start = i
+            break
+
+    tokens: list[tuple[str, str, str]] = []  # (sep, text, kind)
+    prev_df: str | None = None
+    inside_df_run = False
+
+    for i in range(start, len(per)):
+        a = per[i]
+        cur_df = a["df"]
+        has_v  = bool(a["vault"])
+        has_n  = bool(a["nap"])
+
+        # DF change?
+        if cur_df and (cur_df != prev_df or not inside_df_run):
+            sep = " > " if tokens else ""  # nothing before the very first DF
+            tokens.append((sep, cur_df, "DF"))
+            prev_df = cur_df
+            inside_df_run = True  # we're now in a DF run
+            # If assets exist at this *same* vertex, first separator into assets is " / "
+            first_asset_sep = " / "
+        else:
+            # Same DF as before
+            first_asset_sep = " -- " if tokens else ""  # very first thing overall has no sep
+
+        # assets on this vertex
+        if has_v or has_n:
+            emitted_any = False
+            if has_v:
+                tokens.append((first_asset_sep if not emitted_any else " / ", a["vault"], "VAULT"))
+                emitted_any = True
+            if has_n:
+                tokens.append((" / " if emitted_any else first_asset_sep, a["nap"], "NAP"))
+                emitted_any = True
+
+    return tokens
+
+
+def _wrap_tokens_for_width(tokens: list[tuple[str,str,str]], width: int) -> list[list[tuple[str,str,str]]]:
+    """
+    Break tokens into lines so that the rendered visible width <= width.
+    We measure "sep+text" per token; we never split a token.
+    """
+    lines: list[list[tuple[str,str,str]]] = []
+    cur: list[tuple[str,str,str]] = []
+    cur_len = 0
+    for sep, text, kind in tokens:
+        add_len = len(sep) + len(text)
+        if cur and (cur_len + add_len) > width:
+            lines.append(cur)
+            cur = [(sep, text, kind)]
+            cur_len = add_len
+        else:
+            cur.append((sep, text, kind))
+            cur_len += add_len
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _render_header_and_path_for_segment(
+    seg: list[tuple[str, str, str]],
+    suppress_leading_bar: bool = False,
+    add_trailing_bar: bool = True
+) -> tuple[str, str]:
+    """
+    Render a header (with bars) and the matching path line for one width-safe token segment.
+
+    - If suppress_leading_bar=True, we do NOT start the header with ' | ' or ' || ' even if the
+      first token's visible separator is ' / ' or ' -- '. This prevents a blank opening bar on wrapped lines.
+    - Always centers headers over each token's text width.
+    - If add_trailing_bar=True, append a single ' |' at the end so we can size the dash rule perfectly.
+
+    Returns (header_line, path_line).
+    """
+    header_line = ""
+    path_line = ""
+    first = True
+
+    def label_for(kind: str) -> str:
+        if kind == "DF":
+            return "Distribution Fiber"
+        if kind == "VAULT":
+            return "Vault"
+        if kind == "NAP":
+            return "NAP"
+        return ""
+
+    for sep, text, kind in seg:
+        # HEADER: draw separator *only* if it's not the first visible item on a wrapped line
+        if sep == " / ":
+            if not (first and suppress_leading_bar):
+                header_line += " | "
+            path_line += " / "
+        elif sep == " -- ":
+            if not (first and suppress_leading_bar):
+                header_line += " || "
+            path_line += " -- "
+        elif sep == " > ":
+            # Spaces keep header aligned where ' > ' exists in the path.
+            header_line += "   "
+            path_line += " > "
+        else:
+            # No separator at the very first token for both lines.
+            pass
+
+        first = False
+
+        # Token text
+        path_line += text
+
+        # Center label above this token's width
+        w = len(text)
+        lbl = label_for(kind)
+        if w <= 0:
+            hdr = ""
+        else:
+            if len(lbl) > w:
+                hdr = lbl[:w]
+            else:
+                pad = w - len(lbl)
+                left = pad // 2
+                right = pad - left
+                hdr = (" " * left) + lbl + (" " * right)
+
+        header_line += hdr
+
+    if add_trailing_bar and seg:
+        header_line += " |"
+
+    return (header_line, path_line)
+
 
 def emit_conduit_logs(emit_info: bool = True) -> None:
     """
-    Console log rendering for Conduit:
-    • Overview (every conduit): Conduit ID, Vetro ID, Type, #Segments, #Vertices, Path (wrapped)
-    • Followed by the 3 issue sections that already exist.
+    Console log rendering for Conduit.
+
+    When modules.config.LOG_INCLUDE_WALK_PATH is True:
+      • Wider fixed columns (less truncation)
+      • Path rendered via tokens with a centered "type header" above it
+      • Wrap at 400 chars on token boundaries
+      • ' | ' above ' / ' separators, ' || ' above ' -- ', blanks above ' > '
+      • No leading bar at the start of wrapped header lines
+      • Dash rule sized exactly to the end of the last '|' of the header row
+      • Path lines include a *blank* Paths cell so the text aligns under the dynamic header.
     """
     import logging
     logger = logging.getLogger(__name__)
+    import modules.config as cfg
 
     conduits = _load_conduits()
+    fancy = bool(getattr(cfg, "LOG_INCLUDE_WALK_PATH", False))
 
-    logger.info("===== [Conduit] Overview (all features) =====")
-    header = "[Conduit] {:<10} | {:<19} | {:<18} | {:<8} | {:<9} | {}".format(
-        "Conduit ID", "Vetro ID", "Conduit Type", "#Segments", "#Vertices", "Path"
-    )
-    logger.info(header)
+    if not fancy:
+        # ---------- Simple Overview (fallback when fancy off) ----------
+        logger.info("[Conduit] {:<12} | {:<36} | {:<24} | {:<9} | {:<9} | {}".format(
+            "Conduit ID", "Vetro ID", "Conduit Type", "#Segments", "#Vertices", "Path"
+        ))
+        for c in conduits:
+            segs = c.get("segments") or []
+            nseg = len(segs)
+            nvert = sum(len(s) for s in segs)
+            chain_lines = _wrap_path(_build_conduit_named_path(c), width=250)
+            for li, line in enumerate(chain_lines or [""]):
+                if li == 0:
+                    logger.info("[Conduit] {:<12} | {:<36} | {:<24} | {:<9} | {:<9} | {}".format(
+                        c.get("id",""),
+                        c.get("vetro_id",""),
+                        (c.get("type","") or "")[:24],
+                        str(nseg), str(nvert), line
+                    ))
+                else:
+                    logger.info("[Conduit] {:<12} | {:<36} | {:<24} | {:<9} | {:<9} | {}".format(
+                        "", "", "", "", "", line
+                    ))
+        return
+
+    # ---------- Fancy Overview with walk-path headers ----------
+    CID_W, VID_W, TYP_W, SEG_W, VTX_W = 12, 36, 24, 9, 9
+    PATH_W = 400
+
+    # Keep these EXACT so spacing matches the log examples
+    PATHS_LABEL = "Paths -->  "      # note two spaces after the arrow
+    PATHS_CELL_HDR = PATHS_LABEL + "| "    # used on metadata+header rows
+    PATHS_CELL_BLANK = (" " * len(PATHS_LABEL)) + "| "  # same width, but blank label (for path lines)
+
+    # Top static header
+    logger.info("[Conduit] {:<{}} | {:<{}} | {:<{}} | {:<{}} | {:<{}} | {}"
+        .format("Conduit ID", CID_W,
+                "Vetro ID",  VID_W,
+                "Conduit Type", TYP_W,
+                "#Segments", SEG_W,
+                "#Vertices", VTX_W,
+                PATHS_LABEL + "|"))
 
     for c in conduits:
         segs = c.get("segments") or []
         nseg = len(segs)
         nvert = sum(len(s) for s in segs)
-        path_lines = _build_conduit_named_path(c)  # list of wrapped lines
 
-        # empty guard — always print at least one row
-        if not path_lines:
-            path_lines = [""]
+        tokens = _build_conduit_path_tokens(c)
 
-        for li, line in enumerate(path_lines):
-            if li == 0:
-                logger.info(
-                    "[Conduit] {:<10} | {:<19} | {:<18} | {:<8} | {:<9} | {}".format(
-                        c.get("id", ""),
-                        (c.get("vetro_id","")[:19] + "…") if len(c.get("vetro_id","")) > 19 else c.get("vetro_id",""),
-                        c.get("type","")[:18],
-                        str(nseg)[:8],
-                        str(nvert)[:9],
-                        line
-                    )
-                )
-            else:
-                # Continuation line: repeat cols so it lines up under "Path"
-                logger.info(
-                    "[Conduit] {:<10} | {:<19} | {:<18} | {:<8} | {:<9} | {}".format(
-                        "", "", "", "", "", line
-                    )
-                )
+        # Left padding for subsequent lines (blank metadata columns)
+        meta_pad = "[Conduit] {:<{}} | {:<{}} | {:<{}} | {:<{}} | {:<{}} | ".format(
+            "", CID_W, "", VID_W, "", TYP_W, "", SEG_W, "", VTX_W
+        )
 
-    # Existing issue sections (unchanged)
-    # 1) Distributions missing conduit
+        if not tokens:
+            # No path tokens—still show metadata + header cell, then a dash rule
+            first_row = "[Conduit] {:<{}} | {:<{}} | {:<{}} | {:<{}} | {:<{}} | {}".format(
+                c.get("id",""), CID_W,
+                c.get("vetro_id",""), VID_W,
+                (c.get("type","") or ""), TYP_W,
+                str(nseg), SEG_W,
+                str(nvert), VTX_W,
+                PATHS_LABEL + "|"
+            )
+            logger.info(first_row)
+            logger.info("-" * len(first_row))
+            continue
+
+        # Wrap tokens to the PATH_W width
+        lines = _wrap_tokens_for_width(tokens, PATH_W)
+
+        # ---- First segment: metadata row + dynamic header
+        hdr_line, path_line = _render_header_and_path_for_segment(
+            lines[0],
+            suppress_leading_bar=False,  # first header segment follows the 'Paths' cell
+            add_trailing_bar=True
+        )
+
+        first_row = "[Conduit] {:<{}} | {:<{}} | {:<{}} | {:<{}} | {:<{}} | {}{}".format(
+            c.get("id",""), CID_W,
+            c.get("vetro_id",""), VID_W,
+            (c.get("type","") or ""), TYP_W,
+            str(nseg), SEG_W,
+            str(nvert), VTX_W,
+            PATHS_CELL_HDR, hdr_line
+        )
+        logger.info(first_row)
+
+        # Second line: blank Paths cell + the path text (so it lines up under the header)
+        second_row = meta_pad + PATHS_CELL_BLANK + path_line
+        logger.info(second_row)
+
+        # Dash rule to the end of the header row
+        logger.info("-" * len(first_row))
+
+        # ---- Continuations (wrapped segments) ----
+        for seg in lines[1:]:
+            cont_hdr, cont_path = _render_header_and_path_for_segment(
+                seg,
+                suppress_leading_bar=True,   # no leading bar at wrapped start
+                add_trailing_bar=True
+            )
+            # Continuation header + line both include a blank Paths cell for alignment
+            cont_hdr_row = meta_pad + PATHS_CELL_BLANK + cont_hdr
+            cont_path_row = meta_pad + PATHS_CELL_BLANK + cont_path
+
+            logger.info(cont_hdr_row)
+            logger.info(cont_path_row)
+            logger.info("-" * len(cont_hdr_row))
+
+    # -----------------------------------
+    # Issue sections (unchanged)
+    # -----------------------------------
     missing_c = find_distributions_without_conduit()
     if missing_c:
         logger.error("==== Underground Distribution Without Conduit (%d) ====", len(missing_c))
@@ -779,7 +1044,6 @@ def emit_conduit_logs(emit_info: bool = True) -> None:
                 row.get("Distribution ID",""), row.get("Vetro ID",""), row.get("Issue","")))
         logger.info("==== End Underground Distribution Without Conduit ====")
 
-    # 2) Conduits without Underground Distribution
     missing_d = find_conduits_without_distribution()
     if missing_d:
         logger.error("==== Conduit Without Underground Distribution (%d) ====", len(missing_d))
@@ -789,7 +1053,6 @@ def emit_conduit_logs(emit_info: bool = True) -> None:
                 row.get("Conduit ID",""), row.get("Conduit Vetro ID",""), row.get("Issue","")))
         logger.info("==== End Conduit Without Underground Distribution ====")
 
-    # 3) Conduit type problems
     types = find_conduit_type_issues()
     if types:
         logger.error("==== Conduit Type Issues (%d) ====", len(types))
@@ -799,115 +1062,3 @@ def emit_conduit_logs(emit_info: bool = True) -> None:
             logger.error("[Conduit Issues] {:<10} | {:<36} | {:<12} | {}".format(
                 row.get("Conduit ID",""), row.get("Conduit Vetro ID",""), (row.get("Conduit Type","") or "")[:12], row.get("Issue","")))
         logger.info("==== End Conduit Type Issues ====")
-
-
-
-
-# def emit_conduit_logs(emit_info: bool = True) -> None:
-#     """
-#     Emit log lines for all Conduit checks (mirror of the Excel 'Conduit' sheet),
-#     and also an Overview of every conduit feature (attributes + optional path).
-
-#     Does not alter any existing logic — only prints to the log using current
-#     config (LOG_DETAIL, LOG_INCLUDE_WALK_PATH).
-
-#     Overview columns:
-#       Conduit ID | Conduit Vetro ID | Conduit Type | #Segments | #Vertices | Path (optional)
-#     Issue groups logged at ERROR level:
-#       • Distribution Without Conduit
-#       • Conduit Without Underground Distribution
-#       • Conduit Type Issues
-#       • Vaults Missing Conduit
-#     """
-#     import logging
-#     import modules.config as cfg
-#     from modules.basic.log_configs import format_table_lines
-
-#     log = logging.getLogger(__name__)
-
-#     # Respect LOG_DETAIL for how "chatty" the overview is
-#     detail = str(getattr(cfg, "LOG_DETAIL", "DEBUG")).upper()
-#     info_emit = log.debug if detail == "DEBUG" else log.info
-
-#     # ----------------------------
-#     # A) Overview of ALL conduits
-#     # ----------------------------
-#     headers = ["Conduit ID", "Conduit Vetro ID", "Conduit Type", "#Segments", "#Vertices", "Path"]
-#     rows: list[list[str]] = []
-
-#     def _path_preview(segments):
-#         """Compact path preview per segment: first, maybe one middle, and last point."""
-#         if not bool(getattr(cfg, "LOG_INCLUDE_WALK_PATH", False)):
-#             return ""
-#         previews = []
-#         for seg in (segments or []):
-#             if not seg:
-#                 continue
-#             pts = []
-#             # first
-#             pts.append(f"{seg[0][0]:.6f},{seg[0][1]:.6f}")
-#             # maybe one middle point (avoid huge prints)
-#             if len(seg) > 2:
-#                 mid = seg[len(seg)//2]
-#                 pts.append(f"{mid[0]:.6f},{mid[1]:.6f}")
-#             # last
-#             if len(seg) > 1:
-#                 pts.append(f"{seg[-1][0]:.6f},{seg[-1][1]:.6f}")
-#             previews.append(" → ".join(pts))
-#         return " | ".join(previews)
-
-#     for c in _load_conduits():
-#         segs = c.get("segments", [])
-#         seg_count = len(segs)
-#         vtx_count = sum(len(s) for s in segs)
-#         rows.append([
-#             c.get("id", ""),
-#             c.get("vetro_id", ""),
-#             c.get("type", ""),
-#             str(seg_count),
-#             str(vtx_count),
-#             _path_preview(segs),
-#         ])
-
-#     if rows and emit_info:
-#         info_emit("===== [Conduit] Overview (all features) =====")
-#         for line in format_table_lines(headers, rows, max_col_widths=[32, 36, 24, 9, 9, 120]):
-#             info_emit(f"[Conduit] {line}")
-#         info_emit("===== End [Conduit] Overview =====")
-
-#     # -----------------------------------
-#     # B) Issue tables (mirror Excel bits)
-#     # -----------------------------------
-#     def _issue_table(title: str, headers: list[str], items: list[dict] | None):
-#         if not items:
-#             return
-#         lines = format_table_lines(headers, [[str(it.get(h, "")) for h in headers] for it in items])
-#         log.error(f"==== {title} ({len(items)}) ====")
-#         for ln in lines:
-#             log.error(f"[Conduit Issues] {ln}")
-#         log.info(f"==== End {title} ====")
-
-#     # Use your existing finders (no logic changes)
-#     results = run_all_conduit_checks()  # df_missing_conduit, conduit_missing_distribution, type_issues  :contentReference[oaicite:1]{index=1}
-#     vault_missing = find_vaults_missing_conduit()  # {"Vault Vetro ID", "Issue"} rows  :contentReference[oaicite:2]{index=2}
-
-#     _issue_table(
-#         "Distribution Without Conduit",
-#         ["Distribution ID", "Vetro ID", "Issue"],
-#         results.get("df_missing_conduit"),
-#     )
-#     _issue_table(
-#         "Conduit Without Underground Distribution",
-#         ["Conduit ID", "Conduit Vetro ID", "Issue"],
-#         results.get("conduit_missing_distribution"),
-#     )
-#     _issue_table(
-#         "Conduit Type Issues",
-#         ["Conduit ID", "Conduit Vetro ID", "Conduit Type", "Issue"],
-#         results.get("type_issues"),
-#     )
-#     _issue_table(
-#         "Vaults Missing Conduit",
-#         ["Vault Vetro ID", "Issue"],
-#         vault_missing,
-#     )
