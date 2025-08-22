@@ -70,42 +70,37 @@ def _iter_service_locations(svc_locs):
             lat, lon, _loose, splice, sid = itm[:5]
             yield sid, (lat, lon), (splice or "")
 
+
+# modules/hard_scripts/distribution_walker.py
+
 def _expected_colors_from_nap_meta(nap_id: str, nap_spec: dict | None) -> list[str]:
     """
-    Compute expected drop colors at a NAP for the *pre-walk* phase.
+    Compute the *full* set of expected drop colors that are valid at this NAP.
 
-    NEW rule for rare cases:
-      If a NAP has a Tie Point and its title includes Loose Tube groups before
-      " / Tie Point", then expected-at-NAP is the UNION of all indices that
-      appear to the LEFT of " / Tie Point" (e.g., "BLT, 12 / OLT, 1-2").
-      That covers two-LT + tie-point titles like:
-        "... 48ct BLT, 12 / OLT, 1-2 / Tie Point 48ct 15-20 to 24ct 15-20"
-      → expected = [12, 1-2] → Aqua, Blue, Orange.
+    Rules:
+      • If the NAP has a Tie Point *and* the ID text includes “ / Tie Point …”,
+        we keep your existing behavior: take the UNION of all loose-tube indices
+        that appear to the LEFT of “ / Tie Point” in the title. (E.g., “BLT, 12 / OLT, 1-2” → {12, 1-2}).
+      • Otherwise (no Tie Point): we now take the UNION of:
+          – indices from nap_spec["tube_specs"] (if any), and
+          – any indices we can parse from the NAP ID’s parentheses text, regardless of how
+            the groups are separated (commas, slashes, or hyphens).
+        While parsing, we **ignore** fiber counts and unit counts (tokens followed by “ct” or “unit(s)”).
 
-    Otherwise:
-      • If tube_specs exist (no Tie Point case), union all their indices.
-      • If tube_specs are missing, parse both sides from the ID.
-      • If Tie Point exists but we cannot parse left-of Tie Point indices,
-        fall back to the legacy “left-hand indices” parse.
-
-    Color mapping follows the canonical 12-color order (1–Blue … 12–Aqua).
+    Output is mapped through the canonical 12-color order (1–Blue … 12–Aqua) with de-dupe,
+    preserving first-seen order.
     """
     from modules.basic.fiber_colors import FIBER_COLORS
     import re
 
-    indices: list[int] = []
-
-    # Detect tie point from spec or ID text
+    # ---------- Tie Point special case: keep existing “left-of / Tie Point” union ----------
     has_tp = bool(nap_spec and (nap_spec.get("tie_points") or []))
     inside = ""
     if nap_id and "(" in nap_id:
         inside = nap_id.split("(", 1)[1].rstrip(")")
-        if "tie point" in inside.lower():
-            has_tp = True
 
-    # Tie Point present AND we can see the " / Tie Point" delimiter in the title:
-    # take the UNION of all LT indices to the LEFT of that delimiter.
     if has_tp and inside:
+        # Take everything to the LEFT of " / Tie Point"
         parts = [p.strip() for p in inside.split("/")]
         left_parts = []
         for seg in parts:
@@ -113,73 +108,191 @@ def _expected_colors_from_nap_meta(nap_id: str, nap_spec: dict | None) -> list[s
                 break
             left_parts.append(seg)
 
-        # Extract numeric indices from each left-side segment (prefer after last comma)
+        # Extract numeric indices from the left segments
+        idxs: list[int] = []
         for part in left_parts:
             tail = part.rsplit(",", 1)[-1]
             for m in re.finditer(r"(\d+\s*-\s*\d+|\d+)", tail):
                 token = m.group(0)
                 end = m.end()
                 rest = tail[end:].lstrip().lower()
-                # skip fiber counts ("24ct") and any "Units" numbers
                 if rest.startswith("ct") or rest.startswith("unit"):
                     continue
                 if "-" in token:
                     a, b = [int(x) for x in token.split("-", 1)]
-                    indices.extend(range(min(a, b), max(a, b) + 1))
+                    idxs.extend(range(min(a, b), max(a, b) + 1))
                 else:
                     i = int(token)
                     if i >= 1:
-                        indices.append(i)
+                        idxs.append(i)
 
-        if indices:
-            # Dedup → colors
-            seen = set()
-            colors: list[str] = []
-            for i in indices:
-                c = FIBER_COLORS[(i - 1) % len(FIBER_COLORS)]
-                if c not in seen:
-                    seen.add(c)
-                    colors.append(c)
-            return colors
+        # Map indices → colors with stable de-dupe
+        seen = set()
+        colors: list[str] = []
+        for i in idxs:
+            c = FIBER_COLORS[(i - 1) % len(FIBER_COLORS)]
+            if c not in seen:
+                seen.add(c)
+                colors.append(c)
+        return colors
 
-        # Fallback if nothing parsed to the left of Tie Point:
-        # legacy behavior = "left-hand indices" (first indices block in title)
-        return _parse_expected_from_nap_id(nap_id) or []
+    # ---------- Non–Tie-Point: UNION tube_specs + numbers parsed from ID ----------
+    indices: list[int] = []
 
-    # --- No Tie Point (or no parentheses to parse): union tube_specs or parse both sides ---
+    # 1) Collect from tube_specs when present
     if nap_spec and (nap_spec.get("tube_specs") or []):
         for _abbr, idxs in (nap_spec.get("tube_specs") or []):
             for i in (idxs or []):
                 if isinstance(i, int) and i >= 1:
                     indices.append(i)
 
-    if not indices and inside:
-        # Parse both sides from the parentheses text
-        for part in inside.split("/"):
-            tail = part.rsplit(",", 1)[-1]
-            for m in re.finditer(r"(\d+\s*-\s*\d+|\d+)", tail):
-                token = m.group(0)
-                end = m.end()
-                rest = tail[end:].lstrip().lower()
-                if rest.startswith("ct") or rest.startswith("unit"):
-                    continue
-                if "-" in token:
-                    a, b = [int(x) for x in token.split("-", 1)]
-                    indices.extend(range(min(a, b), max(a, b) + 1))
-                else:
-                    i = int(token)
-                    if i >= 1:
-                        indices.append(i)
+    # 2) Also parse *all* numeric tokens from parentheses text to supplement missing groups
+    #    Handles “BLT, 11-12, OLT, 1-2” and “OLT, 12 - GLT, 1-3”, etc.
+    if inside:
+        for m in re.finditer(r"(\d+\s*-\s*\d+|\d+)", inside):
+            token = m.group(0)
+            end = m.end()
+            rest = inside[end:].lstrip().lower()
+            # Skip fiber counts and unit counts
+            if rest.startswith("ct") or rest.startswith("unit"):
+                continue
+            if "-" in token:
+                a, b = [int(x) for x in token.split("-", 1)]
+                indices.extend(range(min(a, b), max(a, b) + 1))
+            else:
+                i = int(token)
+                if i >= 1:
+                    indices.append(i)
 
-    # Deduplicate preserving order → map to colors
-    seen = set()
-    colors: list[str] = []
+    # 3) De-dupe while preserving first-seen order → map to colors
+    seen_idx = set()
+    idx_ordered: list[int] = []
     for i in indices:
+        if i not in seen_idx:
+            seen_idx.add(i)
+            idx_ordered.append(i)
+
+    seen_colors = set()
+    colors: list[str] = []
+    for i in idx_ordered:
         c = FIBER_COLORS[(i - 1) % len(FIBER_COLORS)]
-        if c not in seen:
-            seen.add(c)
+        if c not in seen_colors:
+            seen_colors.add(c)
             colors.append(c)
+
     return colors
+
+
+# def _expected_colors_from_nap_meta(nap_id: str, nap_spec: dict | None) -> list[str]:
+#     """
+#     Compute expected drop colors at a NAP for the *pre-walk* phase.
+
+#     NEW rule for rare cases:
+#       If a NAP has a Tie Point and its title includes Loose Tube groups before
+#       " / Tie Point", then expected-at-NAP is the UNION of all indices that
+#       appear to the LEFT of " / Tie Point" (e.g., "BLT, 12 / OLT, 1-2").
+#       That covers two-LT + tie-point titles like:
+#         "... 48ct BLT, 12 / OLT, 1-2 / Tie Point 48ct 15-20 to 24ct 15-20"
+#       → expected = [12, 1-2] → Aqua, Blue, Orange.
+
+#     Otherwise:
+#       • If tube_specs exist (no Tie Point case), union all their indices.
+#       • If tube_specs are missing, parse both sides from the ID.
+#       • If Tie Point exists but we cannot parse left-of Tie Point indices,
+#         fall back to the legacy “left-hand indices” parse.
+
+#     Color mapping follows the canonical 12-color order (1–Blue … 12–Aqua).
+#     """
+#     from modules.basic.fiber_colors import FIBER_COLORS
+#     import re
+
+#     indices: list[int] = []
+
+#     # Detect tie point from spec or ID text
+#     has_tp = bool(nap_spec and (nap_spec.get("tie_points") or []))
+#     inside = ""
+#     if nap_id and "(" in nap_id:
+#         inside = nap_id.split("(", 1)[1].rstrip(")")
+#         if "tie point" in inside.lower():
+#             has_tp = True
+
+#     # Tie Point present AND we can see the " / Tie Point" delimiter in the title:
+#     # take the UNION of all LT indices to the LEFT of that delimiter.
+#     if has_tp and inside:
+#         parts = [p.strip() for p in inside.split("/")]
+#         left_parts = []
+#         for seg in parts:
+#             if seg.lower().startswith("tie point"):
+#                 break
+#             left_parts.append(seg)
+
+#         # Extract numeric indices from each left-side segment (prefer after last comma)
+#         for part in left_parts:
+#             tail = part.rsplit(",", 1)[-1]
+#             for m in re.finditer(r"(\d+\s*-\s*\d+|\d+)", tail):
+#                 token = m.group(0)
+#                 end = m.end()
+#                 rest = tail[end:].lstrip().lower()
+#                 # skip fiber counts ("24ct") and any "Units" numbers
+#                 if rest.startswith("ct") or rest.startswith("unit"):
+#                     continue
+#                 if "-" in token:
+#                     a, b = [int(x) for x in token.split("-", 1)]
+#                     indices.extend(range(min(a, b), max(a, b) + 1))
+#                 else:
+#                     i = int(token)
+#                     if i >= 1:
+#                         indices.append(i)
+
+#         if indices:
+#             # Dedup → colors
+#             seen = set()
+#             colors: list[str] = []
+#             for i in indices:
+#                 c = FIBER_COLORS[(i - 1) % len(FIBER_COLORS)]
+#                 if c not in seen:
+#                     seen.add(c)
+#                     colors.append(c)
+#             return colors
+
+#         # Fallback if nothing parsed to the left of Tie Point:
+#         # legacy behavior = "left-hand indices" (first indices block in title)
+#         return _parse_expected_from_nap_id(nap_id) or []
+
+#     # --- No Tie Point (or no parentheses to parse): union tube_specs or parse both sides ---
+#     if nap_spec and (nap_spec.get("tube_specs") or []):
+#         for _abbr, idxs in (nap_spec.get("tube_specs") or []):
+#             for i in (idxs or []):
+#                 if isinstance(i, int) and i >= 1:
+#                     indices.append(i)
+
+#     if not indices and inside:
+#         # Parse both sides from the parentheses text
+#         for part in inside.split("/"):
+#             tail = part.rsplit(",", 1)[-1]
+#             for m in re.finditer(r"(\d+\s*-\s*\d+|\d+)", tail):
+#                 token = m.group(0)
+#                 end = m.end()
+#                 rest = tail[end:].lstrip().lower()
+#                 if rest.startswith("ct") or rest.startswith("unit"):
+#                     continue
+#                 if "-" in token:
+#                     a, b = [int(x) for x in token.split("-", 1)]
+#                     indices.extend(range(min(a, b), max(a, b) + 1))
+#                 else:
+#                     i = int(token)
+#                     if i >= 1:
+#                         indices.append(i)
+
+#     # Deduplicate preserving order → map to colors
+#     seen = set()
+#     colors: list[str] = []
+#     for i in indices:
+#         c = FIBER_COLORS[(i - 1) % len(FIBER_COLORS)]
+#         if c not in seen:
+#             seen.add(c)
+#             colors.append(c)
+#     return colors
 
 
 def _compress_indices(idxs: list[int]) -> str:
