@@ -535,6 +535,7 @@ def walk_distribution_branch(
                 continue
 
             expected_colors = _expected_colors_for_branch(nap_spec, fiber_indices)
+            expected_all    = _expected_colors_from_nap_meta(nap_id, nap_spec)
             found_drops = []
             for (dlat, dlon), data in drops_by_pt.items():
                 if haversine(nap_pt[0], nap_pt[1], dlat, dlon) <= THRESHOLD_M:
@@ -566,13 +567,13 @@ def walk_distribution_branch(
             for data in found_drops:
                 drop_color = data["color"]
 
-                # Issue: DROP color not expected for THIS branch at this NAP
-                if drop_color not in expected_colors:
+                # Issue: DROP color not expected at THIS NAP (allow other legit LTs/tie-points)
+                if expected_all and drop_color not in expected_all:
                     logger.error(f"{pad}    [ISSUE] NAP {nap_id}: drop={drop_color} not in expected {expected_colors}")
                     issues.append({
                         "path": " → ".join(str(p) for p in path_so_far + [nap_id] if p is not None),
                         "nap_id": nap_id,
-                        "expected_colors": expected_colors,
+                        "expected_colors": expected_all or expected_colors,
                         "found_drop_color": drop_color,
                         "issue": "Drop color not expected at NAP"
                     })
