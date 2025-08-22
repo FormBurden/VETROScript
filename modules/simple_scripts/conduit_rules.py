@@ -931,7 +931,9 @@ def emit_conduit_logs(emit_info: bool = True) -> None:
             segs = c.get("segments") or []
             nseg = len(segs)
             nvert = sum(len(s) for s in segs)
-            chain_lines = _wrap_path(_build_conduit_named_path(c), width=250)
+            chain_lines = _build_conduit_named_path(c)
+            if isinstance(chain_lines, str):
+                chain_lines = _wrap_path(chain_lines, width=250)
             for li, line in enumerate(chain_lines or [""]):
                 if li == 0:
                     logger.info("[Conduit] {:<12} | {:<36} | {:<24} | {:<9} | {:<9} | {}".format(
