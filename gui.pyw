@@ -88,6 +88,17 @@ class SettingsDialog(tk.Toplevel):
             self._choice_vars[key] = var
             r += 1
 
+        # --- LOG_INCLUDE_WALK_PATH checkbox in Modes (bottom-left)
+        self.var_log_include_walk_path = tk.BooleanVar(
+            value=bool(getattr(modules.config, "LOG_INCLUDE_WALK_PATH", True))
+        )
+        ttk.Checkbutton(
+            choice_frame,
+            text="Include walk path in INFO logs",
+            variable=self.var_log_include_walk_path
+        ).grid(row=r, column=0, sticky="w", padx=8, pady=(8, 3))
+
+
         # ------ Buttons ------
         btns = ttk.Frame(self)
         btns.grid(row=1, column=0, columnspan=2, sticky="ew", **pad)
@@ -122,6 +133,7 @@ class SettingsDialog(tk.Toplevel):
                 self._bool_vars[k].set(bool(v))
             elif k in self._choice_vars:
                 self._choice_vars[k].set(str(v).upper())
+        self.var_log_include_walk_path.set(True)
 
     def _apply(self):
         # Push values back into modules.config
@@ -129,6 +141,8 @@ class SettingsDialog(tk.Toplevel):
             setattr(modules.config, k, bool(var.get()))
         for k, var in self._choice_vars.items():
             setattr(modules.config, k, str(var.get()).upper())
+        # Also push the Modes checkbox
+        modules.config.LOG_INCLUDE_WALK_PATH = bool(self.var_log_include_walk_path.get())
 
         # Recompute the effective LOG_LEVEL in modules.config and re-setup logging
         try:
@@ -144,6 +158,8 @@ class SettingsDialog(tk.Toplevel):
             settings_payload[k] = bool(var.get())
         for k, var in self._choice_vars.items():
             settings_payload[k] = str(var.get()).upper()
+        settings_payload["LOG_INCLUDE_WALK_PATH"] = bool(self.var_log_include_walk_path.get())
+
 
         # Read/merge/save via modules.config prefs helpers (writes to <Output>/user_prefs.json).
         try:
@@ -165,27 +181,64 @@ class SettingsDialog(tk.Toplevel):
 # --- Settings → user_prefs.json snapshot helper (gui.pyw) ---
 def _collect_current_settings_for_prefs() -> dict:
     """
-    Collect the subset of modules.config options that the Settings dialog exposes,
-    so we can persist them into user_prefs.json.
+    Snapshot Settings currently applied to modules.config into a JSON-safe dict.
+    Only whitelists stable, GUI-exposed options so we don’t dump the entire config.
+    Extend this list anytime you surface a new toggle in the Settings window.
     """
     import modules.config as cfg
+
     WHITELIST = [
+        # Booleans
         "SHOW_ALL_SHEETS",
         "LOG_SHOW_ABBREV_HEADER",
-        "LOG_DETAIL",
-        "OUTPUT_XLSX",
-        "ID_COL",
+        "LOG_INCLUDE_WALK_PATH",   # <-- NEW: persist the Modes checkbox
+
+        # Strings / simple values
+        "LOG_DETAIL",            # "DEBUG" / "INFO"
+        "OUTPUT_XLSX",           # if you expose this in Settings
+        "ID_COL",                # "ID" or custom
+
+        # Lists (kept JSON-friendly)
         "LOG_ABBREV_HEADER_LINES",
         "PATTERNS",
     ]
+
     snap = {}
     for key in WHITELIST:
         if hasattr(cfg, key):
             val = getattr(cfg, key)
+            # Make lists and tuples JSON-safe
             if isinstance(val, tuple):
                 val = list(val)
             snap[key] = val
     return snap
+
+
+
+
+# def _collect_current_settings_for_prefs() -> dict:
+#     """
+#     Collect the subset of modules.config options that the Settings dialog exposes,
+#     so we can persist them into user_prefs.json.
+#     """
+#     import modules.config as cfg
+#     WHITELIST = [
+#         "SHOW_ALL_SHEETS",
+#         "LOG_SHOW_ABBREV_HEADER",
+#         "LOG_DETAIL",
+#         "OUTPUT_XLSX",
+#         "ID_COL",
+#         "LOG_ABBREV_HEADER_LINES",
+#         "PATTERNS",
+#     ]
+#     snap = {}
+#     for key in WHITELIST:
+#         if hasattr(cfg, key):
+#             val = getattr(cfg, key)
+#             if isinstance(val, tuple):
+#                 val = list(val)
+#             snap[key] = val
+#     return snap
 
 
 # --- NEW: persist GUI Settings in user_prefs.json ----------------------------
