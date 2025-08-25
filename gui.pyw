@@ -640,9 +640,7 @@ class PeerCheckGUI(tk.Tk):
 
 
     def _browse_data_dir(self):
-        start = modules.config.get_last_dir(
-            "data", default=str(getattr(modules.config, "DATA_DIR", ""))
-        )
+        start = modules.config.get_last_dir("data")
         path = filedialog.askdirectory(
             title="Select Data Folder",
             mustexist=True,
