@@ -11,6 +11,109 @@ import modules.config
 import main  # keep as in existing file
 run_main = main.main  # alias, matches your current usage
 
+# --- UI helpers for first-time Logs tooltip and periodic nudge popups ---
+import tkinter as tk
+from tkinter import Toplevel, Label, Button
+from typing import Callable, Optional
+import modules.config as cfg
+
+
+def _ui_show_mouse_popover(parent: tk.Widget,
+                           text: str,
+                           dismiss_after_ms: int = 3000,
+                           include_dont_show: bool = False,
+                           on_never: Optional[Callable[[], None]] = None) -> None:
+    """
+    Small, tooltip-like popup near the current mouse position.
+
+    - parent: any widget in the target toplevel (used to locate screen coords)
+    - text: message to display (you'll fill in your real copy later)
+    - dismiss_after_ms: auto-close delay; set to 0 to require manual close
+    - include_dont_show: if True, shows a 'Do not show again' button
+    - on_never: callback invoked if 'Do not show again' is clicked
+    """
+    # Find current pointer position
+    try:
+        x = parent.winfo_pointerx()
+        y = parent.winfo_pointery()
+    except Exception:
+        # Fallback near parent if pointer query fails
+        parent.update_idletasks()
+        x = parent.winfo_rootx() + 40
+        y = parent.winfo_rooty() + 40
+
+    tip = Toplevel(parent)
+    tip.wm_overrideredirect(True)  # borderless
+    tip.attributes("-topmost", True)
+
+    # Basic styling
+    frame = tk.Frame(tip, bd=1, relief="solid", bg="#111")
+    frame.pack(fill="both", expand=True)
+    lbl = Label(frame, text=text, fg="#fff", bg="#111", justify="left", padx=10, pady=8)
+    lbl.pack(anchor="w")
+
+    if include_dont_show:
+        btn_row = tk.Frame(frame, bg="#111")
+        btn_row.pack(fill="x", padx=8, pady=(0, 8))
+        def _never():
+            try:
+                if on_never:
+                    on_never()
+            finally:
+                tip.destroy()
+        Button(btn_row, text="Do not show again", command=_never).pack(side="left")
+        Button(btn_row, text="Close", command=tip.destroy).pack(side="right")
+
+    tip.update_idletasks()
+    # Offset so the tooltip doesn't hide the cursor
+    tip.geometry(f"+{x + 12}+{y + 12}")
+
+    if dismiss_after_ms and not include_dont_show:
+        tip.after(int(dismiss_after_ms), tip.destroy)
+
+
+def _maybe_show_logs_nag(parent: tk.Widget) -> None:
+    """
+    Called when 'Run Checks' is pressed.
+    Increments a run counter until user clicks Logs. Shows nudges at 5 and 10.
+    The 10th includes a 'Do not show again' button.
+    Pref keys used in modules.config user_prefs.json:
+      - 'logs_clicked_once' (bool)
+      - 'runs_without_logs_click' (int)
+      - 'suppress_logs_nag' (bool)
+    """
+    suppress = bool(cfg.get_pref("suppress_logs_nag", False))
+    if suppress:
+        return
+
+    clicked = bool(cfg.get_pref("logs_clicked_once", False))
+    runs = int(cfg.get_pref("runs_without_logs_click", 0))
+
+    if not clicked:
+        runs += 1
+        cfg.set_pref("runs_without_logs_click", runs)
+
+        if runs == 5:
+            # 5th attempt: soft reminder (auto-dismiss)
+            _ui_show_mouse_popover(
+                parent,
+                text="Remember, you can click on Logs, and you will get more detailed info and see exactly how this program works on finding the errors.",
+                dismiss_after_ms=10000,
+                include_dont_show=False
+            )
+        elif runs == 10:
+            # 10th attempt: stronger reminder with 'Do not show again'
+            def _never():
+                cfg.set_pref("suppress_logs_nag", True)
+            _ui_show_mouse_popover(
+                parent,
+                text="You haven't opened Logs yet. Want to stop these reminders?",
+                dismiss_after_ms=0,  # require user action
+                include_dont_show=True,
+                on_never=_never
+            )
+
+
 APP_TITLE = "Peer Checking GUI"
 
 import tkinter as tk
@@ -507,12 +610,38 @@ class PeerCheckGUI(tk.Tk):
             modules.config.update_last_dir("output", path)
 
     def _on_toggle_logs(self):
-        """
-        Persist the Logs checkbox to <Output>/user_prefs.json and sync runtime config.
+        """Persist the Logs checkbox to /user_prefs.json and sync runtime config.
+        Also shows a first-time mouse popover and resets the run counter.
         """
         val = bool(self.include_logs_var.get())
         modules.config.WRITE_LOG_FILE = val
         modules.config.set_pref("include_logs", val)
+
+        # First-time "Logs" click: show the popover near mouse, then mark it as seen
+        if not modules.config.get_pref("logs_clicked_once", False):
+            try:
+                # Assumes _ui_show_mouse_popover() is defined as in step (1)
+                _ui_show_mouse_popover(
+                    parent=self,
+                    text="Hover mouse over (?) for more info, and go to Settings for more Log settings.",
+                    dismiss_after_ms=5000,
+                    include_dont_show=False,
+                )
+            except Exception:
+                # Don’t block toggling if the helper isn’t present
+                pass
+            # Remember the first click and reset the run counter
+            modules.config.set_pref("logs_clicked_once", True)
+            modules.config.set_pref("runs_without_logs_click", 0)
+
+
+    # def _on_toggle_logs(self):
+    #     """
+    #     Persist the Logs checkbox to <Output>/user_prefs.json and sync runtime config.
+    #     """
+    #     val = bool(self.include_logs_var.get())
+    #     modules.config.WRITE_LOG_FILE = val
+    #     modules.config.set_pref("include_logs", val)
 
 
     def _browse_data_dir(self):
@@ -535,9 +664,18 @@ class PeerCheckGUI(tk.Tk):
     def _open_instructions(self):
         InstructionsDialog(self)
 
+
     def _run(self):
+        # Increment + maybe nag (5th/10th) if Logs hasn't been clicked yet.
+        # Safe if helpers aren't present yet (wrapped in try/except).
+        try:
+            _maybe_show_logs_nag(parent=self)
+            self.update_idletasks(); self.update()
+        except Exception:
+            pass
+
         data_dir = os.path.abspath(self.data_dir_var.get().strip())
-        out_dir  = os.path.abspath(self.out_dir_var.get().strip())
+        out_dir = os.path.abspath(self.out_dir_var.get().strip())
 
         if not data_dir or not os.path.isdir(data_dir):
             messagebox.showerror("Error", "Please select a valid Data Folder.")
@@ -567,6 +705,40 @@ class PeerCheckGUI(tk.Tk):
             self.status_var.set("Error.")
             traceback.print_exc()
             messagebox.showerror("Error", f"Script failed:\n{e}")
+
+
+    # def _run(self):
+    #     data_dir = os.path.abspath(self.data_dir_var.get().strip())
+    #     out_dir  = os.path.abspath(self.out_dir_var.get().strip())
+
+    #     if not data_dir or not os.path.isdir(data_dir):
+    #         messagebox.showerror("Error", "Please select a valid Data Folder.")
+    #         return
+    #     if not out_dir or not os.path.isdir(out_dir):
+    #         messagebox.showerror("Error", "Please select a valid Output Folder.")
+    #         return
+
+    #     # Point prefs to this Output, persist bootstrap pointer, and save both dirs
+    #     modules.config.set_prefs_base_dir(out_dir)
+    #     modules.config.set_bootstrap_last_output_dir(out_dir)
+    #     modules.config.update_last_dir("output", out_dir)
+    #     modules.config.update_last_dir("data", data_dir)
+
+    #     # Always reference modules.config.DATA_DIR for network data
+    #     modules.config.DATA_DIR = data_dir
+
+    #     try:
+    #         self.status_var.set("Running…")
+    #         self.update_idletasks()
+    #         modules.config.WRITE_LOG_FILE = bool(self.include_logs_var.get())
+    #         modules.config.set_pref("include_logs", modules.config.WRITE_LOG_FILE)
+    #         run_main(data_dir, out_dir)
+    #         self.status_var.set("Done.")
+    #         messagebox.showinfo("Success", f"Checks complete!\nSaved to {out_dir}")
+    #     except Exception as e:
+    #         self.status_var.set("Error.")
+    #         traceback.print_exc()
+    #         messagebox.showerror("Error", f"Script failed:\n{e}")
 
 
 if __name__ == "__main__":
