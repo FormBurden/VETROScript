@@ -639,28 +639,39 @@ class PeerCheckGUI(tk.Tk):
             modules.config.set_pref("runs_without_logs_click", 0)
 
 
-    # def _on_toggle_logs(self):
-    #     """
-    #     Persist the Logs checkbox to <Output>/user_prefs.json and sync runtime config.
-    #     """
-    #     val = bool(self.include_logs_var.get())
-    #     modules.config.WRITE_LOG_FILE = val
-    #     modules.config.set_pref("include_logs", val)
-
-
     def _browse_data_dir(self):
         start = modules.config.get_last_dir(
-            "data",
-            default=str(getattr(modules.config, "DATA_DIR", ""))
+            "data", default=str(getattr(modules.config, "DATA_DIR", ""))
         )
         path = filedialog.askdirectory(
             title="Select Data Folder",
             mustexist=True,
             initialdir=start
         )
-        if path:
-            self.data_dir_var.set(path)
-            modules.config.update_last_dir("data", path)
+        if not path:
+            return
+
+        # 1) Update the Data field and persist
+        self.data_dir_var.set(path)
+        modules.config.update_last_dir("data", path)
+
+        # 2) Immediately refresh the Output field to reflect first-run auto-adjust
+        #    (first run: Output becomes the parent of the chosen Data folder)
+        try:
+            new_out = modules.config.get_last_dir("output")
+        except Exception:
+            new_out = modules.config.get_bootstrap_last_output_dir()
+
+        self.out_dir_var.set(new_out)
+
+        # 3) Make sure subsequent prefs writes go to the new Output base
+        try:
+            modules.config.set_prefs_base_dir(new_out)
+        except Exception:
+            pass
+
+
+
 
     def _open_settings(self):
         SettingsDialog(self)
