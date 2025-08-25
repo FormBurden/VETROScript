@@ -232,41 +232,57 @@ def write_network_statistics(wb, stats):
 
 def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
     """
-    Create an Excel sheet named 'Distribution and NAP Walker' from the issues
-    returned by modules.hard_scripts.distribution_walker.find_deep_distribution_mismatches().
+    Create an Excel sheet named 'Distribution and NAP Walker' from the issues returned by
+    modules.hard_scripts.distribution_walker.find_deep_distribution_mismatches().
 
     Expected issue keys (any may be absent depending on issue type):
       - path (str)
       - nap_id (str)
       - dist_id (str)
       - svc_id (str)
-      - found_drop_color (str)  # for 'Drop color not expected at NAP'
-      - drop_color (str)        # for 'Service Location splice color mismatch'
+      - found_drop_color (str)   # for 'Drop color not expected at NAP'
+      - drop_color (str)         # for 'Service Location splice color mismatch'
       - svc_colors (list[str])
       - expected_colors (list[str])
-      - found_drops (list[dict])  # {drop_id, color, distance_m}
+      - found_drops (list[dict]) # {drop_id, color, distance_m}
       - missing_colors (list[str])
       - issue (str)
-    """    
+    """
     from modules.basic.log_configs import format_table_lines
 
     # If there are no issues and we’re not in “show all” mode, do not create the sheet.
     if not issues and not getattr(modules.config, "SHOW_ALL_SHEETS", False):
-        return  # ← key change: nothing written, sheet won’t exist
+        return
 
     # 1) Create sheet
     ws = wb.create_sheet(title='Distribution and NAP Walker')
-    ws.freeze_panes = 'A2'
 
-    # 2) Header row
+    # 2) Header bands
+    # Row 1: Big merged title across A..J
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=10)  # A1:J1
+    title_cell = ws.cell(row=1, column=1, value='Distribution and NAP Walker')
+    title_cell.font = Font(bold=True)
+    title_cell.alignment = Alignment(horizontal='center')
+
+    # Row 2: "NAP Specific" merged over G..I
+    ws.merge_cells(start_row=2, start_column=7, end_row=2, end_column=9)   # G2:I2
+    nap_spec = ws.cell(row=2, column=7, value='NAP Specific')
+    nap_spec.font = Font(bold=True)
+    nap_spec.alignment = Alignment(horizontal='center')
+
+    # Row 3: Column headers
     headers = [
-        'Path', 'NAP ID', 'Dist. ID', 'Service Location ID', 'Drop Color',
-        'SL Colors', 'Expected Colors', 'Missing Colors', 'Found Drops', 'Issue',
+        'Path', 'NAP ID', 'Dist. ID', 'Service Location ID',
+        'Drop Color', 'SL Colors', 'Expected Colors', 'Missing Colors',
+        'Found Drops', 'Issue',
     ]
     for c, title in enumerate(headers, start=1):
-        cell = ws.cell(row=1, column=c, value=title)
+        cell = ws.cell(row=3, column=c, value=title)
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal='center')
+
+    # Lock the three header rows at top (and keep left columns behavior consistent)
+    ws.freeze_panes = 'A4'
 
     # 3) Normalize helpers
     def _csv(v):
@@ -292,7 +308,7 @@ def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
 
     # 4) Rows
     rows_for_log = []
-    row_idx = 2
+    row_idx = 4
     for it in (issues or []):
         path = it.get('path', '')
         nap_id = it.get('nap_id', '')
@@ -308,6 +324,7 @@ def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
         row_vals = [path, nap_id, dist_id, svc_id, drop_col, svc_cols, expected, missing, found_dps, issue_txt]
         for c, val in enumerate(row_vals, start=1):
             ws.cell(row=row_idx, column=c, value=val)
+
         rows_for_log.append([str(x) if x is not None else '' for x in row_vals])
         row_idx += 1
 
@@ -318,7 +335,99 @@ def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
             logger.error(f"[Distribution and NAP Walker] {line}")
         logger.info("==== End [Distribution and NAP Walker] Errors ====")
 
+    # Borders (covers merged headers + grid) — keep existing helper
     apply_borders(ws)
+
+
+# def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
+#     """
+#     Create an Excel sheet named 'Distribution and NAP Walker' from the issues
+#     returned by modules.hard_scripts.distribution_walker.find_deep_distribution_mismatches().
+
+#     Expected issue keys (any may be absent depending on issue type):
+#       - path (str)
+#       - nap_id (str)
+#       - dist_id (str)
+#       - svc_id (str)
+#       - found_drop_color (str)  # for 'Drop color not expected at NAP'
+#       - drop_color (str)        # for 'Service Location splice color mismatch'
+#       - svc_colors (list[str])
+#       - expected_colors (list[str])
+#       - found_drops (list[dict])  # {drop_id, color, distance_m}
+#       - missing_colors (list[str])
+#       - issue (str)
+#     """    
+#     from modules.basic.log_configs import format_table_lines
+
+#     # If there are no issues and we’re not in “show all” mode, do not create the sheet.
+#     if not issues and not getattr(modules.config, "SHOW_ALL_SHEETS", False):
+#         return  # ← key change: nothing written, sheet won’t exist
+
+#     # 1) Create sheet
+#     ws = wb.create_sheet(title='Distribution and NAP Walker')
+#     ws.freeze_panes = 'A2'
+
+#     # 2) Header row
+#     headers = [
+#         'Path', 'NAP ID', 'Dist. ID', 'Service Location ID', 'Drop Color',
+#         'SL Colors', 'Expected Colors', 'Missing Colors', 'Found Drops', 'Issue',
+#     ]
+#     for c, title in enumerate(headers, start=1):
+#         cell = ws.cell(row=1, column=c, value=title)
+#         cell.font = Font(bold=True)
+#         cell.alignment = Alignment(horizontal='center')
+
+#     # 3) Normalize helpers
+#     def _csv(v):
+#         if v is None:
+#             return ''
+#         if isinstance(v, (list, tuple, set)):
+#             return ', '.join(str(x) for x in v)
+#         return str(v)
+
+#     def _fmt_found_drops(v):
+#         if not isinstance(v, (list, tuple)):
+#             return ''
+#         out = []
+#         for d in v:
+#             if not isinstance(d, dict):
+#                 continue
+#             did = d.get('drop_id', '')
+#             col = d.get('color', '')
+#             dist = d.get('distance_m', '')
+#             dist_part = f"d={dist}m" if dist != '' else ""
+#             out.append(f"{did}={col}({dist_part})" if dist_part else f"{did}={col}")
+#         return ', '.join(out)
+
+#     # 4) Rows
+#     rows_for_log = []
+#     row_idx = 2
+#     for it in (issues or []):
+#         path = it.get('path', '')
+#         nap_id = it.get('nap_id', '')
+#         dist_id = it.get('dist_id', '')
+#         svc_id = it.get('svc_id', '')
+#         drop_col = it.get('found_drop_color') or it.get('drop_color', '')
+#         svc_cols = _csv(it.get('svc_colors', []))
+#         expected = _csv(it.get('expected_colors', []))
+#         missing = _csv(it.get('missing_colors', []))
+#         found_dps = _fmt_found_drops(it.get('found_drops', []))
+#         issue_txt = (it.get('issue') or '').strip()
+
+#         row_vals = [path, nap_id, dist_id, svc_id, drop_col, svc_cols, expected, missing, found_dps, issue_txt]
+#         for c, val in enumerate(row_vals, start=1):
+#             ws.cell(row=row_idx, column=c, value=val)
+#         rows_for_log.append([str(x) if x is not None else '' for x in row_vals])
+#         row_idx += 1
+
+#     # 5) Error-only logging (no Excel mirror)
+#     if rows_for_log:
+#         logger.error(f"==== [Distribution and NAP Walker] Errors ({len(rows_for_log)}) ====")
+#         for line in format_table_lines(headers, rows_for_log):
+#             logger.error(f"[Distribution and NAP Walker] {line}")
+#         logger.info("==== End [Distribution and NAP Walker] Errors ====")
+
+#     apply_borders(ws)
 
 
 def write_geojson_summary(
