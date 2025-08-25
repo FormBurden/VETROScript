@@ -953,70 +953,145 @@ def write_nid_issues(wb, nid_issues: list):
 
 def write_service_location_attr_issues(wb, records):
     """
-    Service Location Issues sheet.
+    Service Location Issues (single combined table)
 
-    Layout (unchanged from your reverted version), with:
-      • Issue column text = "Missing Attribute"
-      • Attribute cells show "Missing" or "✅"
-      • NEW: freeze header row; center columns starting at col 3
-      • Logging mirror restored
+    Columns:
+      Service Location ID | Build Type | Building Type | Drop Type | NAP # | NAP Location | Loose Tube | Splice Colors | Attribute | Value | Issue
+
+    Status rules per attribute (per Service Location):
+      - 'Missing' if any issue row for (SID, Attr) has Issue == 'Missing Attribute'
+      - '❌'      if any non-empty Issue exists for (SID, Attr) but not Missing
+      - '✅'      otherwise
+
+    Each *issue* becomes one row; the 8 status cells show the overall status for that SID,
+    and the last 3 columns show that specific issue's Attribute/Value/Issue.
     """
+    from openpyxl.styles import Alignment, Font
+    from collections import defaultdict
+    import modules.config
+    from modules.basic.log_configs import format_table_lines
 
-    ws = wb.create_sheet(title='Service Location Issues')
-
-    # Required attributes (same list you were using)
-    attrs = [
-        "Build Type", "Building Type", "Drop Type", "NAP #",
-        "NAP Location", "Loose Tube", "Splice Colors",
+    ATTRS = [
+        "Build Type",
+        "Building Type",
+        "Drop Type",
+        "NAP #",
+        "NAP Location",
+        "Loose Tube",
+        "Splice Colors",
     ]
 
-    # Build SL → per-attr status map
-    sl_map: dict[str, dict[str, str]] = {}
+    # If nothing to write and SHOW_ALL_SHEETS is false, skip sheet creation.
+    if not records and not getattr(modules.config, "SHOW_ALL_SHEETS", False):
+        return
+
+    ws = wb.create_sheet(title="SL Attributes Issues")
+    ws.freeze_panes = "A3"
+
+    # ── Title (row 1)
+    total_cols = 1 + len(ATTRS) + 3  # SID + 7 statuses + (Attribute, Value, Issue)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
+    title = ws.cell(row=1, column=1, value="Service Location Issues")
+    title.font = Font(bold=True)
+    title.alignment = Alignment(horizontal="center")
+
+    # ── Headers (row 2)
+    headers = ["Service Location ID"] + ATTRS + ["Attribute", "Value", "Issue"]
+    for c, h in enumerate(headers, start=1):
+        cell = ws.cell(row=2, column=c, value=h)
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center")
+
+    # ── Build stable SID order from the incoming issue records
+    sid_order = []
+    seen = set()
     for rec in (records or []):
-        sl_id = rec.get("Service Location ID")
-        if not sl_id:
+        sid = str(rec.get("Service Location ID", "")).strip()
+        if sid and sid not in seen:
+            sid_order.append(sid)
+            seen.add(sid)
+
+    # ── Compute per-(SID, Attr) status with precedence Missing > ❌ > ✅
+    def _bump(cur, new):
+        order = {"✅": 0, "❌": 1, "Missing": 2}
+        return new if order[new] > order[cur] else cur
+
+    status = defaultdict(lambda: "✅")  # (sid, attr) -> status
+
+    for rec in (records or []):
+        sid = str(rec.get("Service Location ID", "")).strip()
+        attr = str(rec.get("Attribute", "")).strip()
+        issue = str(rec.get("Issue", "")).strip()
+        if not sid or attr not in ATTRS:
             continue
-        if sl_id not in sl_map:
-            sl_map[sl_id] = {a: "✅" for a in attrs}
-        a = rec.get("Attribute")
-        if a in sl_map[sl_id]:
-            sl_map[sl_id][a] = "Missing"
+        if issue == "Missing Attribute":
+            status[(sid, attr)] = _bump(status[(sid, attr)], "Missing")
+        elif issue:
+            status[(sid, attr)] = _bump(status[(sid, attr)], "❌")
+        else:
+            status[(sid, attr)] = _bump(status[(sid, attr)], "✅")
 
-    # Only include columns that are missing for someone (unless SHOW_ALL_SHEETS)
-    if getattr(modules.config, "SHOW_ALL_SHEETS", False):
-        missing_cols = attrs
-    else:
-        missing_cols = [a for a in attrs if any(flags[a] == "Missing" for flags in sl_map.values())]
+    # ── Group issues by SID
+    issues_by_sid = defaultdict(list)
+    for rec in (records or []):
+        sid = str(rec.get("Service Location ID", "")).strip()
+        if sid:
+            issues_by_sid[sid].append(rec)
 
-    # Header
-    headers = ["Service Location ID", "Issue"] + missing_cols
-    ws.append(headers)
-    for c in ws[1]:
-        c.font = Font(bold=True)
+    # ── Write rows: one row per issue, with the 8 status cells filled
+    r = 3
+    rows_for_log = []
+    for sid in sid_order:
+        for rec in issues_by_sid.get(sid, []):
+            row_vals = [sid]
+            for attr in ATTRS:
+                cell_val = status[(sid, attr)]
+                row_vals.append(cell_val)
+            row_vals.extend([
+                rec.get("Attribute", ""),
+                rec.get("Value", ""),
+                rec.get("Issue", ""),
+            ])
+            # write to sheet
+            for c, v in enumerate(row_vals, start=1):
+                cell = ws.cell(row=r, column=c, value=v)
+                if 2 <= c <= (1 + len(ATTRS)):  # center the 8 status cells
+                    cell.alignment = Alignment(horizontal="center")
+            rows_for_log.append(row_vals)
+            r += 1
 
-    # Freeze header row
-    ws.freeze_panes = "A2"
+    # ── Log a compact table of the rows we wrote (use fixed-width ASCII so columns align)
+    if rows_for_log:
+        def _logify_status(x: str) -> str:
+            # Use 3-char fixed tokens for alignment in logs:
+            #   ✓/✅  -> 'OK '   (3)
+            #   ✗/❌  -> 'ERR'   (3)
+            #   Missing -> 'MIS' (3)
+            if x in ("✅", "✓"):
+                return "OK "
+            if x in ("❌", "✗"):
+                return "ERR"
+            if x == "Missing":
+                return "MIS"
+            return x
 
-    # Rows
-    rows_written = []
-    for sl_id, flags in sl_map.items():
-        row = [sl_id, "Missing Attribute"] + [("Missing" if flags.get(a) == "Missing" else "✅") for a in missing_cols]
-        ws.append(row)
-        rows_written.append(row)
+        pretty_rows = []
+        for row in rows_for_log:
+            fixed = row[:]
+            # columns: [SID] + ATTRS + [Attribute, Value, Issue]
+            for i in range(1, 1 + len(ATTRS)):
+                fixed[i] = _logify_status(fixed[i])
+            pretty_rows.append(fixed)
 
-    # Center columns starting at column 3 (C…)
-    center = Alignment(horizontal="center")
-    for col in range(3, ws.max_column + 1):
-        for r in range(1, ws.max_row + 1):
-            ws.cell(row=r, column=col).alignment = center
+        logger.error(f"==== [SL Attributes Issues] ❌ Rows ({len(pretty_rows)}) ====")
+        for line in format_table_lines(headers, pretty_rows):
+            logger.error(f"[SL Attributes Issues] ❌ {line}")
+        logger.info("==== End [SL Attributes Issues] Rows ====")
 
-    # Logging mirror (restored)
-    if getattr(modules.config, "LOG_MIRROR_SHEETS", False) and getattr(modules.config, "LOG_SVCLOC_SHEET_TO_LOG", False):
-        logger.info(" | ".join(headers))
-        for row in rows_written:
-            logger.error(" | ".join(str(v) if v is not None else "" for v in row))
 
+    # ── Borders & autosize
     apply_borders(ws)
+    auto_size(wb)
 
 
 def write_nap_issues_sheet(wb, nap_mismatches, id_format_issues):
