@@ -17,10 +17,9 @@ from tkinter import Toplevel, Label, Button
 from typing import Callable, Optional
 import modules.config as cfg
 
-
 def _ui_show_mouse_popover(parent: tk.Widget,
                            text: str,
-                           dismiss_after_ms: int = 3000,
+                           dismiss_after_ms: int = 5000,
                            include_dont_show: bool = False,
                            on_never: Optional[Callable[[], None]] = None) -> None:
     """
@@ -37,7 +36,6 @@ def _ui_show_mouse_popover(parent: tk.Widget,
         x = parent.winfo_pointerx()
         y = parent.winfo_pointery()
     except Exception:
-        # Fallback near parent if pointer query fails
         parent.update_idletasks()
         x = parent.winfo_rootx() + 40
         y = parent.winfo_rooty() + 40
@@ -55,18 +53,21 @@ def _ui_show_mouse_popover(parent: tk.Widget,
     if include_dont_show:
         btn_row = tk.Frame(frame, bg="#111")
         btn_row.pack(fill="x", padx=8, pady=(0, 8))
+
         def _never():
             try:
                 if on_never:
                     on_never()
             finally:
                 tip.destroy()
+
         Button(btn_row, text="Do not show again", command=_never).pack(side="left")
-        Button(btn_row, text="Close", command=tip.destroy).pack(side="right")
+        Button(btn_row, text="Dismiss", command=tip.destroy).pack(side="right")  # <-- was 'Close'
 
     tip.update_idletasks()
     # Offset so the tooltip doesn't hide the cursor
     tip.geometry(f"+{x + 12}+{y + 12}")
+    tip.update()  # ensure the window is mapped now
 
     if dismiss_after_ms and not include_dont_show:
         tip.after(int(dismiss_after_ms), tip.destroy)
@@ -75,12 +76,12 @@ def _ui_show_mouse_popover(parent: tk.Widget,
 def _maybe_show_logs_nag(parent: tk.Widget) -> None:
     """
     Called when 'Run Checks' is pressed.
-    Increments a run counter until user clicks Logs. Shows nudges at 5 and 10.
-    The 10th includes a 'Do not show again' button.
-    Pref keys used in modules.config user_prefs.json:
-      - 'logs_clicked_once' (bool)
-      - 'runs_without_logs_click' (int)
-      - 'suppress_logs_nag' (bool)
+    Increments a run counter until user clicks Logs.
+      - On the 5th run: soft reminder (auto-dismiss 10s) with your exact text.
+      - On the 10th run and every 5 thereafter (15, 20, ...): reminder with
+        'Do not show again' and 'Dismiss'. 'Dismiss' means it'll return every 5 runs.
+        'Do not show again' sets a permanent suppress flag.
+    Stops entirely once the user clicks Logs (logs_clicked_once=True).
     """
     suppress = bool(cfg.get_pref("suppress_logs_nag", False))
     if suppress:
@@ -89,29 +90,33 @@ def _maybe_show_logs_nag(parent: tk.Widget) -> None:
     clicked = bool(cfg.get_pref("logs_clicked_once", False))
     runs = int(cfg.get_pref("runs_without_logs_click", 0))
 
-    if not clicked:
-        runs += 1
-        cfg.set_pref("runs_without_logs_click", runs)
+    if clicked:
+        return
 
-        if runs == 5:
-            # 5th attempt: soft reminder (auto-dismiss)
-            _ui_show_mouse_popover(
-                parent,
-                text="Remember, you can click on Logs, and you will get more detailed info and see exactly how this program works on finding the errors.",
-                dismiss_after_ms=10000,
-                include_dont_show=False
-            )
-        elif runs == 10:
-            # 10th attempt: stronger reminder with 'Do not show again'
-            def _never():
-                cfg.set_pref("suppress_logs_nag", True)
-            _ui_show_mouse_popover(
-                parent,
-                text="You haven't opened Logs yet. Want to stop these reminders?",
-                dismiss_after_ms=0,  # require user action
-                include_dont_show=True,
-                on_never=_never
-            )
+    # User still hasn't clicked Logs — count this run
+    runs += 1
+    cfg.set_pref("runs_without_logs_click", runs)
+
+    if runs == 5:
+        # 5th attempt: soft reminder (auto-dismiss) — KEEP EXACT TEXT/TIMER
+        _ui_show_mouse_popover(
+            parent,
+            text="Remember, you can click on Logs, and you will get more detailed info and see exactly how this program works on finding the errors.",
+            dismiss_after_ms=10000,
+            include_dont_show=False
+        )
+    elif runs >= 10 and runs % 5 == 0:
+        # 10th, 15th, 20th, ... : stronger reminder with 'Do not show again'
+        def _never():
+            cfg.set_pref("suppress_logs_nag", True)
+
+        _ui_show_mouse_popover(
+            parent,
+            text="You haven't opened Logs yet. Want to stop these reminders? these reminders.",
+            dismiss_after_ms=0,  # require user action
+            include_dont_show=True,
+            on_never=_never
+        )
 
 
 APP_TITLE = "Peer Checking GUI"
@@ -478,7 +483,6 @@ class HoverTooltip:
                 self._tip = None
 
 
-
 # -----------------------------
 # Main window
 # -----------------------------
@@ -705,40 +709,6 @@ class PeerCheckGUI(tk.Tk):
             self.status_var.set("Error.")
             traceback.print_exc()
             messagebox.showerror("Error", f"Script failed:\n{e}")
-
-
-    # def _run(self):
-    #     data_dir = os.path.abspath(self.data_dir_var.get().strip())
-    #     out_dir  = os.path.abspath(self.out_dir_var.get().strip())
-
-    #     if not data_dir or not os.path.isdir(data_dir):
-    #         messagebox.showerror("Error", "Please select a valid Data Folder.")
-    #         return
-    #     if not out_dir or not os.path.isdir(out_dir):
-    #         messagebox.showerror("Error", "Please select a valid Output Folder.")
-    #         return
-
-    #     # Point prefs to this Output, persist bootstrap pointer, and save both dirs
-    #     modules.config.set_prefs_base_dir(out_dir)
-    #     modules.config.set_bootstrap_last_output_dir(out_dir)
-    #     modules.config.update_last_dir("output", out_dir)
-    #     modules.config.update_last_dir("data", data_dir)
-
-    #     # Always reference modules.config.DATA_DIR for network data
-    #     modules.config.DATA_DIR = data_dir
-
-    #     try:
-    #         self.status_var.set("Running…")
-    #         self.update_idletasks()
-    #         modules.config.WRITE_LOG_FILE = bool(self.include_logs_var.get())
-    #         modules.config.set_pref("include_logs", modules.config.WRITE_LOG_FILE)
-    #         run_main(data_dir, out_dir)
-    #         self.status_var.set("Done.")
-    #         messagebox.showinfo("Success", f"Checks complete!\nSaved to {out_dir}")
-    #     except Exception as e:
-    #         self.status_var.set("Error.")
-    #         traceback.print_exc()
-    #         messagebox.showerror("Error", f"Script failed:\n{e}")
 
 
 if __name__ == "__main__":
