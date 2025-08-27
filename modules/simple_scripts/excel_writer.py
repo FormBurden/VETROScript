@@ -1024,7 +1024,7 @@ def write_service_location_attr_issues(wb, records):
     status = defaultdict(lambda: "✅")  # (sid, attr) -> "✅" | "❌" | "Missing"
     for rec in (records or []):
         sid = str(rec.get("Service Location ID", "")).strip()
-        attr = str(rec.get("Attribute", "")).strip()
+        attr = str(rec.get("Attribute Problem", "")).strip()
         issue = str(rec.get("Issue", "")).strip()
         if not sid or attr not in ATTRS:
             continue

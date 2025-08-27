@@ -34,6 +34,47 @@ def _normalize_color(c: str) -> str:
     return c.strip()
 
 
+# NEW: parse color *prefixes* from an SL "Splice Colors" string.
+# Examples:
+#   "Black 1.1, Black 1.2"         -> ["Black", "Black"]
+#   "Slate 2.7; Slate 2.8"         -> ["Slate", "Slate"]
+#   "5 - Slate 1.5, Slate 1.6"     -> ["Slate", "Slate"]
+#   "Blue"                          -> ["Blue"]
+def _parse_splice_prefix_colors(splice_str: str) -> list[str]:
+    if not isinstance(splice_str, str) or not splice_str.strip():
+        return []
+
+    tokens = re.split(r"[,\n;/]+", splice_str)
+    colors: list[str] = []
+
+    # Try to match canonical names at the start of each token (case-insensitive).
+    # Also tolerant of "5 - Slate 1.5" formats by peeking right side of "-".
+    for tok in tokens:
+        s = tok.strip()
+        if not s:
+            continue
+
+        # If a dash is present, prefer right side (often "5 - Slate 1.5")
+        if "-" in s:
+            left, right = [p.strip() for p in s.split("-", 1)]
+            # replace s with right side to try color name match
+            if right:
+                s = right
+
+        # Find a canonical color name prefix
+        low = s.lower()
+        matched = None
+        for name in FIBER_COLORS:
+            if low.startswith(name.lower()):
+                matched = name
+                break
+
+        if matched:
+            colors.append(matched)
+
+    return colors
+
+
 def _token_to_color(token: str) -> str:
     """
     Resolve a splice token to canonical color:
@@ -125,134 +166,345 @@ def load_service_locations():
 
 def find_nid_mismatches():
     """
-    For each NID, find all its fiber drops, extract the Drop Color, match the far
-    endpoint to a service location (skipping NAPs), then verify that the service
-    location’s Splice Colors include that Drop Color.
-    NOTE: Dot-codes like '1.3' are NOT interpreted; names win (e.g., 'Black 1.1' -> 'Black').
+    NID Issues:
+    - For each NID, determine the pre-NID drop color = the color of the drop that runs
+      between the NID and a NAP (NID → NAP).
+    - Then, for every drop that runs NID → Service Location (i.e., the far endpoint is NOT a NAP),
+      check the Service Location's Splice Colors. The SL must include the *pre-NID* color (as a
+      color prefix like "Black ..."), NOT the after-NID drop's color.
+
+    Returns: list of dict rows with keys:
+      nid, svc_id, svc_color, drop_color, issue
+        - 'drop_color' is the *pre-NID* color we expected to see on the SL splice colors.
     """
     nids = load_nids()
     drops = load_drops()
     nap_coords, _nap_map = load_features('nap', modules.config.ID_COL)
     svcs = load_service_locations()
-    issues = []
+
+    issues: list[dict] = []
+
+    # Build an easy predicate for "near a NAP"
+    def _is_near_any_nap(latlon) -> bool:
+        lat, lon = latlon
+        return any(haversine(lat, lon, nlat, nlon) <= THRESHOLD_M for nlat, nlon in nap_coords)
 
     for nid_lat, nid_lon, nid_vid in nids:
-        for verts, raw_color, drop_id in drops:
+        # 1) Find the *pre-NID* color for this NID (a drop whose far endpoint is a NAP).
+        pre_color: str | None = None
+        for verts, raw_color, _drop_id in drops:
             start, end = verts[0], verts[-1]
+
             if haversine(nid_lat, nid_lon, start[0], start[1]) <= THRESHOLD_M:
-                endpoint = end
+                far = end
             elif haversine(nid_lat, nid_lon, end[0], end[1]) <= THRESHOLD_M:
-                endpoint = start
+                far = start
             else:
                 continue
 
-            # Skip if the far endpoint is a NAP
-            if any(haversine(endpoint[0], endpoint[1], lat, lon) <= THRESHOLD_M for lat, lon in nap_coords):
+            if _is_near_any_nap(far):
+                pre_color = _normalize_color(raw_color)
+                break
+
+        if not pre_color:
+            # No NAP-bound drop means we cannot derive the pre-NID color.
+            issues.append({
+                "nid": nid_vid,
+                "svc_id": "",
+                "svc_color": "",
+                "drop_color": "",
+                "issue": "No NAP-bound drop found for NID (cannot derive pre-NID color)"
+            })
+            # Still continue to next NID; nothing to check downstream.
+            continue
+
+        # 2) For each NID-connected drop whose far endpoint is NOT a NAP, match SL and verify.
+        for verts, _raw_color_after, _drop_id in drops:
+            start, end = verts[0], verts[-1]
+
+            if haversine(nid_lat, nid_lon, start[0], start[1]) <= THRESHOLD_M:
+                far = end
+            elif haversine(nid_lat, nid_lon, end[0], end[1]) <= THRESHOLD_M:
+                far = start
+            else:
                 continue
 
-            drop_color = _normalize_color(raw_color)
+            # Skip if the far endpoint is a NAP — those are the pre-NID drops we used above.
+            if _is_near_any_nap(far):
+                continue
 
-            # Find the service location that this endpoint lands on
+            # Find a service location at the far endpoint
             svc_match = next(
-                (((lat, lon, loose, splice_str, svc_id))
-                 for lat, lon, loose, splice_str, svc_id in svcs
-                 if haversine(endpoint[0], endpoint[1], lat, lon) <= THRESHOLD_M),
+                (
+                    (lat, lon, loose, splice_str, svc_id)
+                    for lat, lon, loose, splice_str, svc_id in svcs
+                    if haversine(far[0], far[1], lat, lon) <= THRESHOLD_M
+                ),
                 None
             )
 
             if not svc_match:
                 issues.append({
-                    "nid": nid_vid, "svc_id": "", "svc_color": "",
-                    "drop_color": drop_color, "issue": "No service location found at end of drop"
+                    "nid": nid_vid,
+                    "svc_id": "",
+                    "svc_color": "",
+                    "drop_color": pre_color,
+                    "issue": "No service location found at NID downstream endpoint"
                 })
                 continue
 
-            _, _, _, splice_str, svc_id = svc_match
+            _, _, _loose, splice_str, svc_id = svc_match
+            prefixes = _parse_splice_prefix_colors(splice_str)
+            ok = pre_color in prefixes
 
-            # Parse colors from Splice Colors (names win)
-            tokens = [s.strip() for s in (splice_str or "").replace("/", ",").split(",") if s.strip()]
-            svc_colors = []
-            for tok in tokens:
-                col = _token_to_color(tok)
-                if col:
-                    svc_colors.append(col)
-
-            if drop_color not in svc_colors:
+            if not ok:
                 issues.append({
                     "nid": nid_vid,
                     "svc_id": svc_id,
-                    "svc_color": ", ".join(svc_colors),
-                    "drop_color": drop_color,
-                    "issue": "Splice Colors mismatch",
+                    "svc_color": ", ".join(prefixes),
+                    "drop_color": pre_color,
+                    "issue": "Splice Colors mismatch (missing pre-NID color)"
                 })
 
     return issues
 
 
+# def find_nid_mismatches():
+#     """
+#     For each NID, find all its fiber drops, extract the Drop Color, match the far
+#     endpoint to a service location (skipping NAPs), then verify that the service
+#     location’s Splice Colors include that Drop Color.
+#     NOTE: Dot-codes like '1.3' are NOT interpreted; names win (e.g., 'Black 1.1' -> 'Black').
+#     """
+#     nids = load_nids()
+#     drops = load_drops()
+#     nap_coords, _nap_map = load_features('nap', modules.config.ID_COL)
+#     svcs = load_service_locations()
+#     issues = []
+
+#     for nid_lat, nid_lon, nid_vid in nids:
+#         for verts, raw_color, drop_id in drops:
+#             start, end = verts[0], verts[-1]
+#             if haversine(nid_lat, nid_lon, start[0], start[1]) <= THRESHOLD_M:
+#                 endpoint = end
+#             elif haversine(nid_lat, nid_lon, end[0], end[1]) <= THRESHOLD_M:
+#                 endpoint = start
+#             else:
+#                 continue
+
+#             # Skip if the far endpoint is a NAP
+#             if any(haversine(endpoint[0], endpoint[1], lat, lon) <= THRESHOLD_M for lat, lon in nap_coords):
+#                 continue
+
+#             drop_color = _normalize_color(raw_color)
+
+#             # Find the service location that this endpoint lands on
+#             svc_match = next(
+#                 (((lat, lon, loose, splice_str, svc_id))
+#                  for lat, lon, loose, splice_str, svc_id in svcs
+#                  if haversine(endpoint[0], endpoint[1], lat, lon) <= THRESHOLD_M),
+#                 None
+#             )
+
+#             if not svc_match:
+#                 issues.append({
+#                     "nid": nid_vid, "svc_id": "", "svc_color": "",
+#                     "drop_color": drop_color, "issue": "No service location found at end of drop"
+#                 })
+#                 continue
+
+#             _, _, _, splice_str, svc_id = svc_match
+
+#             # Parse colors from Splice Colors (names win)
+#             tokens = [s.strip() for s in (splice_str or "").replace("/", ",").split(",") if s.strip()]
+#             svc_colors = []
+#             for tok in tokens:
+#                 col = _token_to_color(tok)
+#                 if col:
+#                     svc_colors.append(col)
+
+#             if drop_color not in svc_colors:
+#                 issues.append({
+#                     "nid": nid_vid,
+#                     "svc_id": svc_id,
+#                     "svc_color": ", ".join(svc_colors),
+#                     "drop_color": drop_color,
+#                     "issue": "Splice Colors mismatch",
+#                 })
+
+#     return issues
+
+
 def iterate_nid_checks(include_ok: bool = True) -> list[dict]:
     """
-    Return one row per NID→drop→service-location check.
-    Names dominate; dot-codes like '1.3' are not interpreted.
+    Expanded rows for NID checks (for sheet/log output).
+
+    One logical row per NID→(downstream)ServiceLocation check:
+      - expected_splice: the *pre-NID* drop color (from the NID→NAP drop)
+      - actual_splice:   equal to expected_splice when OK; '' when mismatch
+      - svc_color:       comma-joined color prefixes parsed from SL "Splice Colors"
+      - issue:           '' when OK; diagnostic string otherwise
     """
     nids = load_nids()
     drops = load_drops()
     nap_coords, _nap_map = load_features('nap', modules.config.ID_COL)
     svcs = load_service_locations()
+
     rows: list[dict] = []
 
+    def _is_near_any_nap(latlon) -> bool:
+        lat, lon = latlon
+        return any(haversine(lat, lon, nlat, nlon) <= THRESHOLD_M for nlat, nlon in nap_coords)
+
     for nid_lat, nid_lon, nid_vid in nids:
-        for verts, raw_color, drop_id in drops:
+        # A) Determine pre-NID color (NID→NAP drop)
+        pre_color: str | None = None
+        for verts, raw_color, _drop_id in drops:
             start, end = verts[0], verts[-1]
             if haversine(nid_lat, nid_lon, start[0], start[1]) <= THRESHOLD_M:
-                endpoint = end
+                far = end
             elif haversine(nid_lat, nid_lon, end[0], end[1]) <= THRESHOLD_M:
-                endpoint = start
+                far = start
+            else:
+                continue
+            if _is_near_any_nap(far):
+                pre_color = _normalize_color(raw_color)
+                break
+
+        if not pre_color:
+            # If no pre-NID color can be derived, record one row and continue.
+            rows.append({
+                "nid": nid_vid,
+                "svc_id": "",
+                "svc_color": "",
+                "drop_color": "",
+                "expected_splice": "",
+                "actual_splice": "",
+                "issue": "No NAP-bound drop found for NID (cannot derive pre-NID color)",
+            })
+            continue
+
+        # B) Check each NID-connected downstream SL (far endpoint not a NAP)
+        for verts, _raw_color_after, _drop_id in drops:
+            start, end = verts[0], verts[-1]
+
+            if haversine(nid_lat, nid_lon, start[0], start[1]) <= THRESHOLD_M:
+                far = end
+            elif haversine(nid_lat, nid_lon, end[0], end[1]) <= THRESHOLD_M:
+                far = start
             else:
                 continue
 
-            # skip NAP endpoints
-            if any(haversine(endpoint[0], endpoint[1], lat, lon) <= THRESHOLD_M for lat, lon in nap_coords):
+            if _is_near_any_nap(far):
+                # This is the pre-NID drop we used to compute pre_color; skip reporting.
                 continue
 
-            drop_color = _normalize_color(raw_color)
-
+            # Match SL at downstream endpoint
             svc_match = next(
-                (((lat, lon, loose, splice_str, svc_id))
-                 for lat, lon, loose, splice_str, svc_id in svcs
-                 if haversine(endpoint[0], endpoint[1], lat, lon) <= THRESHOLD_M),
+                (
+                    (lat, lon, loose, splice_str, svc_id)
+                    for lat, lon, loose, splice_str, svc_id in svcs
+                    if haversine(far[0], far[1], lat, lon) <= THRESHOLD_M
+                ),
                 None
             )
 
             if not svc_match:
-                rows.append({
-                    "nid": nid_vid, "svc_id": "", "svc_color": "",
-                    "drop_color": drop_color, "expected_splice": "",
-                    "actual_splice": drop_color, "issue": "No service location found at end of drop",
-                })
+                row = {
+                    "nid": nid_vid,
+                    "svc_id": "",
+                    "svc_color": "",
+                    "drop_color": pre_color,
+                    "expected_splice": pre_color,
+                    "actual_splice": "",
+                    "issue": "No service location found at NID downstream endpoint",
+                }
+                rows.append(row)
                 continue
 
-            _, _, _, splice_str, svc_id = svc_match
+            _, _, _loose, splice_str, svc_id = svc_match
+            prefixes = _parse_splice_prefix_colors(splice_str)
+            ok = pre_color in prefixes
 
-            tokens = [s.strip() for s in (splice_str or "").replace("/", ",").split(",") if s.strip()]
-            svc_colors: list[str] = []
-            for tok in tokens:
-                col = _token_to_color(tok)
-                if col:
-                    svc_colors.append(col)
-
-            ok = drop_color in svc_colors
+            row = {
+                "nid": nid_vid,
+                "svc_id": svc_id,
+                "svc_color": ", ".join(prefixes),
+                "drop_color": pre_color,            # we are checking PRE-NID color
+                "expected_splice": pre_color if ok else pre_color,
+                "actual_splice": pre_color if ok else "",
+                "issue": "" if ok else "Splice Colors mismatch (missing pre-NID color)",
+            }
             if ok or include_ok:
-                rows.append({
-                    "nid": nid_vid,
-                    "svc_id": svc_id,
-                    "svc_color": ", ".join(svc_colors),
-                    "drop_color": drop_color,
-                    "expected_splice": drop_color if ok else "",
-                    "actual_splice": drop_color,
-                    "issue": "" if ok else "Splice Colors mismatch",
-                })
+                rows.append(row)
 
     return rows
+
+
+# def iterate_nid_checks(include_ok: bool = True) -> list[dict]:
+#     """
+#     Return one row per NID→drop→service-location check.
+#     Names dominate; dot-codes like '1.3' are not interpreted.
+#     """
+#     nids = load_nids()
+#     drops = load_drops()
+#     nap_coords, _nap_map = load_features('nap', modules.config.ID_COL)
+#     svcs = load_service_locations()
+#     rows: list[dict] = []
+
+#     for nid_lat, nid_lon, nid_vid in nids:
+#         for verts, raw_color, drop_id in drops:
+#             start, end = verts[0], verts[-1]
+#             if haversine(nid_lat, nid_lon, start[0], start[1]) <= THRESHOLD_M:
+#                 endpoint = end
+#             elif haversine(nid_lat, nid_lon, end[0], end[1]) <= THRESHOLD_M:
+#                 endpoint = start
+#             else:
+#                 continue
+
+#             # skip NAP endpoints
+#             if any(haversine(endpoint[0], endpoint[1], lat, lon) <= THRESHOLD_M for lat, lon in nap_coords):
+#                 continue
+
+#             drop_color = _normalize_color(raw_color)
+
+#             svc_match = next(
+#                 (((lat, lon, loose, splice_str, svc_id))
+#                  for lat, lon, loose, splice_str, svc_id in svcs
+#                  if haversine(endpoint[0], endpoint[1], lat, lon) <= THRESHOLD_M),
+#                 None
+#             )
+
+#             if not svc_match:
+#                 rows.append({
+#                     "nid": nid_vid, "svc_id": "", "svc_color": "",
+#                     "drop_color": drop_color, "expected_splice": "",
+#                     "actual_splice": drop_color, "issue": "No service location found at end of drop",
+#                 })
+#                 continue
+
+#             _, _, _, splice_str, svc_id = svc_match
+
+#             tokens = [s.strip() for s in (splice_str or "").replace("/", ",").split(",") if s.strip()]
+#             svc_colors: list[str] = []
+#             for tok in tokens:
+#                 col = _token_to_color(tok)
+#                 if col:
+#                     svc_colors.append(col)
+
+#             ok = drop_color in svc_colors
+#             if ok or include_ok:
+#                 rows.append({
+#                     "nid": nid_vid,
+#                     "svc_id": svc_id,
+#                     "svc_color": ", ".join(svc_colors),
+#                     "drop_color": drop_color,
+#                     "expected_splice": drop_color if ok else "",
+#                     "actual_splice": drop_color,
+#                     "issue": "" if ok else "Splice Colors mismatch",
+#                 })
+
+#     return rows
 
 
 def build_sid_upstream_drop_color_map() -> dict[str, str]:
