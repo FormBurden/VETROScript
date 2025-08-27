@@ -152,116 +152,6 @@ def _expected_colors_from_nap_meta(nap_id: str, nap_spec: dict | None) -> list[s
     return colors
 
 
-# def _expected_colors_from_nap_meta(nap_id: str, nap_spec: dict | None) -> list[str]:
-#     """
-#     Compute the *full* set of expected drop colors that are valid at this NAP.
-
-#     Rules:
-#       • If the NAP has a Tie Point *and* the ID text includes “ / Tie Point …”,
-#         we keep your existing behavior: take the UNION of all loose-tube indices
-#         that appear to the LEFT of “ / Tie Point” in the title. (E.g., “BLT, 12 / OLT, 1-2” → {12, 1-2}).
-#       • Otherwise (no Tie Point): we now take the UNION of:
-#           – indices from nap_spec["tube_specs"] (if any), and
-#           – any indices we can parse from the NAP ID’s parentheses text, regardless of how
-#             the groups are separated (commas, slashes, or hyphens).
-#         While parsing, we **ignore** fiber counts and unit counts (tokens followed by “ct” or “unit(s)”).
-
-#     Output is mapped through the canonical 12-color order (1–Blue … 12–Aqua) with de-dupe,
-#     preserving first-seen order.
-#     """
-#     from modules.basic.fiber_colors import FIBER_COLORS
-#     import re
-
-#     # ---------- Tie Point special case: keep existing “left-of / Tie Point” union ----------
-#     has_tp = bool(nap_spec and (nap_spec.get("tie_points") or []))
-#     inside = ""
-#     if nap_id and "(" in nap_id:
-#         inside = nap_id.split("(", 1)[1].rstrip(")")
-
-#     if has_tp and inside:
-#         # Take everything to the LEFT of " / Tie Point"
-#         parts = [p.strip() for p in inside.split("/")]
-#         left_parts = []
-#         for seg in parts:
-#             if seg.lower().startswith("tie point"):
-#                 break
-#             left_parts.append(seg)
-
-#         # Extract numeric indices from the left segments
-#         idxs: list[int] = []
-#         for part in left_parts:
-#             tail = part.rsplit(",", 1)[-1]
-#             for m in re.finditer(r"(\d+\s*-\s*\d+|\d+)", tail):
-#                 token = m.group(0)
-#                 end = m.end()
-#                 rest = tail[end:].lstrip().lower()
-#                 if rest.startswith("ct") or rest.startswith("unit"):
-#                     continue
-#                 if "-" in token:
-#                     a, b = [int(x) for x in token.split("-", 1)]
-#                     idxs.extend(range(min(a, b), max(a, b) + 1))
-#                 else:
-#                     i = int(token)
-#                     if i >= 1:
-#                         idxs.append(i)
-
-#         # Map indices → colors with stable de-dupe
-#         seen = set()
-#         colors: list[str] = []
-#         for i in idxs:
-#             c = FIBER_COLORS[(i - 1) % len(FIBER_COLORS)]
-#             if c not in seen:
-#                 seen.add(c)
-#                 colors.append(c)
-#         return colors
-
-#     # ---------- Non–Tie-Point: UNION tube_specs + numbers parsed from ID ----------
-#     indices: list[int] = []
-
-#     # 1) Collect from tube_specs when present
-#     if nap_spec and (nap_spec.get("tube_specs") or []):
-#         for _abbr, idxs in (nap_spec.get("tube_specs") or []):
-#             for i in (idxs or []):
-#                 if isinstance(i, int) and i >= 1:
-#                     indices.append(i)
-
-#     # 2) Also parse *all* numeric tokens from parentheses text to supplement missing groups
-#     #    Handles “BLT, 11-12, OLT, 1-2” and “OLT, 12 - GLT, 1-3”, etc.
-#     if inside:
-#         for m in re.finditer(r"(\d+\s*-\s*\d+|\d+)", inside):
-#             token = m.group(0)
-#             end = m.end()
-#             rest = inside[end:].lstrip().lower()
-#             # Skip fiber counts and unit counts
-#             if rest.startswith("ct") or rest.startswith("unit"):
-#                 continue
-#             if "-" in token:
-#                 a, b = [int(x) for x in token.split("-", 1)]
-#                 indices.extend(range(min(a, b), max(a, b) + 1))
-#             else:
-#                 i = int(token)
-#                 if i >= 1:
-#                     indices.append(i)
-
-#     # 3) De-dupe while preserving first-seen order → map to colors
-#     seen_idx = set()
-#     idx_ordered: list[int] = []
-#     for i in indices:
-#         if i not in seen_idx:
-#             seen_idx.add(i)
-#             idx_ordered.append(i)
-
-#     seen_colors = set()
-#     colors: list[str] = []
-#     for i in idx_ordered:
-#         c = FIBER_COLORS[(i - 1) % len(FIBER_COLORS)]
-#         if c not in seen_colors:
-#             seen_colors.add(c)
-#             colors.append(c)
-
-#     return colors
-
-
 def _compress_indices(idxs: list[int]) -> str:
     """
     Compress a list of 1-based indices into human-readable ranges:
@@ -349,12 +239,15 @@ def _parse_expected_from_nap_id(nap_id: str) -> list[str]:
     except Exception:
         return []
 
+
 def _parse_svc_splice_colors(value: str | None) -> list[str]:
     """
-    Accepts:
-    - names: 'Red, Green'
-    - indices: '5' or '5,7'
-    - dot codes: '1.3, 1.4' (take suffix -> 3,4 -> colors)
+    Accept:
+      - names: 'Red, Green'
+      - index-dash-name: '5 - Slate'
+      - indices: '5' or '5,7' (1..12 only)
+      - name + trailing codes: 'Black 1.1' -> 'Black'
+    Dot-code ONLY tokens like '1.3' are NOT accepted anymore.
     Returns canonical color names.
     """
     if not value:
@@ -362,23 +255,34 @@ def _parse_svc_splice_colors(value: str | None) -> list[str]:
     parts = [p.strip() for p in str(value).split(",") if p.strip()]
     out: list[str] = []
     seen = set()
+
+    def _canon(token: str) -> str:
+        s = token.strip()
+        # "N - Name" → Name
+        if " - " in s:
+            left, right = [x.strip() for x in s.split(" - ", 1)]
+            if right in FIBER_COLORS:
+                return right
+            s = left
+        # startswith a known color?
+        sl = s.lower()
+        for name in FIBER_COLORS:
+            if sl.startswith(name.lower()):
+                return name
+        # pure numeric 1..12
+        if s.isdigit():
+            i = int(s)
+            if 1 <= i <= len(FIBER_COLORS):
+                return FIBER_COLORS[i - 1]
+        return ""
+
     for p in parts:
-        c = None
-        if "." in p:
-            # '1.3' -> 3
-            suf = p.rsplit(".", 1)[-1]
-            if suf.isdigit():
-                idx = int(suf)
-                if idx > 0:
-                    c = FIBER_COLORS[(idx - 1) % len(FIBER_COLORS)]
-        elif p.isdigit():
-            c = _normalize_color(p)
-        else:
-            c = _normalize_color(p)
-        if c and c in FIBER_COLORS and c not in seen:
+        c = _canon(p)
+        if c and c not in seen:
             seen.add(c)
             out.append(c)
     return out
+
 
 def _expected_colors_for_branch(nap_spec, fiber_indices):
     """

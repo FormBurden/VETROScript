@@ -863,8 +863,8 @@ def write_nid_issues(wb, nid_issues: list):
 
     # Column headers (row 2)
     headers = [
-        'NID ID', 'Issue', 'Service Location ID', 'Service Location Color',
-        'Drop Color', 'Expected Splice', 'Actual Splice',
+        'NID ID', 'Service Location ID', 'Service Location Color', 'Drop Color',
+        'Expected Splice', 'Actual Splice', 'Issue',
     ]
     for c, t in enumerate(headers, start=1):
         cell = ws.cell(row=2, column=c, value=t)
@@ -876,12 +876,12 @@ def write_nid_issues(wb, nid_issues: list):
     # Data (from row 3)
     for r, issue in enumerate(nid_issues or [], start=3):
         ws.cell(row=r, column=1, value=issue.get('nid'))
-        ws.cell(row=r, column=2, value=issue.get('issue', ''))
-        ws.cell(row=r, column=3, value=issue.get('svc_id', ''))
-        ws.cell(row=r, column=4, value=issue.get('svc_color', ''))
-        ws.cell(row=r, column=5, value=issue.get('drop_color', ''))
-        ws.cell(row=r, column=6, value=issue.get('expected_splice', ''))
-        ws.cell(row=r, column=7, value=issue.get('actual_splice', ''))
+        ws.cell(row=r, column=2, value=issue.get('svc_id', ''))
+        ws.cell(row=r, column=3, value=issue.get('svc_color', ''))
+        ws.cell(row=r, column=4, value=issue.get('drop_color', ''))
+        ws.cell(row=r, column=5, value=issue.get('expected_splice', ''))
+        ws.cell(row=r, column=6, value=issue.get('actual_splice', ''))
+        ws.cell(row=r, column=7, value=issue.get('issue', ''))
 
     # Center columns 4..7 (headers + data)
     center = Alignment(horizontal='center')
@@ -963,14 +963,17 @@ def write_service_location_attr_issues(wb, records):
       - '❌'      if any non-empty Issue exists for (SID, Attr) but not Missing
       - '✅'      otherwise
 
-    Each *issue* becomes one row; the 8 status cells show the overall status for that SID,
-    and the last 3 columns show that specific issue's Attribute/Value/Issue.
+    IMPORTANT (per user request):
+      - Only flag each Service Location once (one row per SID).
+      - The final three columns (Attribute / Value / Issue) show ONLY a non-"Missing Attribute"
+        issue. If a SID has only "Missing" problems, those three columns will be blank; the
+        8 status cells will still show "Missing" for the specific attributes.
     """
-    from openpyxl.styles import Alignment, Font
     from collections import defaultdict
-    import modules.config
     from modules.basic.log_configs import format_table_lines
+    from openpyxl.styles import Alignment, Font
 
+    # Columns we show as per-attribute status cells (keep aligned with SL validation)
     ATTRS = [
         "Build Type",
         "Building Type",
@@ -981,7 +984,7 @@ def write_service_location_attr_issues(wb, records):
         "Splice Colors",
     ]
 
-    # If nothing to write and SHOW_ALL_SHEETS is false, skip sheet creation.
+    # If there's nothing to show, and not in SHOW_ALL_SHEETS mode, skip creating the sheet.
     if not records and not getattr(modules.config, "SHOW_ALL_SHEETS", False):
         return
 
@@ -997,10 +1000,12 @@ def write_service_location_attr_issues(wb, records):
 
     # ── Headers (row 2)
     headers = ["Service Location ID"] + ATTRS + ["Attribute", "Value", "Issue"]
+    bold = Font(bold=True)
+    center = Alignment(horizontal="center")
     for c, h in enumerate(headers, start=1):
         cell = ws.cell(row=2, column=c, value=h)
-        cell.font = Font(bold=True)
-        cell.alignment = Alignment(horizontal="center")
+        cell.font = bold
+        cell.alignment = center
 
     # ── Build stable SID order from the incoming issue records
     sid_order = []
@@ -1016,8 +1021,7 @@ def write_service_location_attr_issues(wb, records):
         order = {"✅": 0, "❌": 1, "Missing": 2}
         return new if order[new] > order[cur] else cur
 
-    status = defaultdict(lambda: "✅")  # (sid, attr) -> status
-
+    status = defaultdict(lambda: "✅")  # (sid, attr) -> "✅" | "❌" | "Missing"
     for rec in (records or []):
         sid = str(rec.get("Service Location ID", "")).strip()
         attr = str(rec.get("Attribute", "")).strip()
@@ -1031,42 +1035,50 @@ def write_service_location_attr_issues(wb, records):
         else:
             status[(sid, attr)] = _bump(status[(sid, attr)], "✅")
 
-    # ── Group issues by SID
-    issues_by_sid = defaultdict(list)
+    # ── For each SID, pick the FIRST non-"Missing Attribute" issue (if any) to show in the final 3 cols
+    first_non_missing_by_sid = {}
     for rec in (records or []):
         sid = str(rec.get("Service Location ID", "")).strip()
-        if sid:
-            issues_by_sid[sid].append(rec)
+        if not sid or sid in first_non_missing_by_sid:
+            continue
+        issue_text = (rec.get("Issue") or "").strip()
+        if issue_text and issue_text != "Missing Attribute":
+            first_non_missing_by_sid[sid] = {
+                "Attribute": rec.get("Attribute", ""),
+                "Value": rec.get("Value", ""),
+                "Issue": issue_text,
+            }
 
-    # ── Write rows: one row per issue, with the 8 status cells filled
-    r = 3
+    # ── Write exactly ONE ROW per SID
     rows_for_log = []
+    r = 3
     for sid in sid_order:
-        for rec in issues_by_sid.get(sid, []):
-            row_vals = [sid]
-            for attr in ATTRS:
-                cell_val = status[(sid, attr)]
-                row_vals.append(cell_val)
-            row_vals.extend([
-                rec.get("Attribute", ""),
-                rec.get("Value", ""),
-                rec.get("Issue", ""),
-            ])
-            # write to sheet
-            for c, v in enumerate(row_vals, start=1):
-                cell = ws.cell(row=r, column=c, value=v)
-                if 2 <= c <= (1 + len(ATTRS)):  # center the 8 status cells
-                    cell.alignment = Alignment(horizontal="center")
-            rows_for_log.append(row_vals)
-            r += 1
+        row_vals = [sid]
+        # 8 status cells (centered)
+        for attr in ATTRS:
+            cell_val = status[(sid, attr)]
+            row_vals.append(cell_val)
 
-    # ── Log a compact table of the rows we wrote (use fixed-width ASCII so columns align)
+        # Final three columns: non-missing issue (or blanks if none)
+        chosen = first_non_missing_by_sid.get(sid, None)
+        if chosen:
+            row_vals.extend([chosen.get("Attribute", ""), chosen.get("Value", ""), chosen.get("Issue", "")])
+        else:
+            row_vals.extend(["", "", ""])
+
+        # write to sheet
+        for c, v in enumerate(row_vals, start=1):
+            cell = ws.cell(row=r, column=c, value=v)
+            if 2 <= c <= (1 + len(ATTRS)):  # center the 8 status cells
+                cell.alignment = center
+        rows_for_log.append(row_vals)
+        r += 1
+
+    # ── Log a compact table of the rows we wrote
     if rows_for_log:
         def _logify_status(x: str) -> str:
-            # Use 3-char fixed tokens for alignment in logs:
-            #   ✓/✅  -> 'OK '   (3)
-            #   ✗/❌  -> 'ERR'   (3)
-            #   Missing -> 'MIS' (3)
+            # 3-char fixed tokens for aligned logs:
+            # ✓/✅ -> 'OK ' ; ✗/❌ -> 'ERR' ; Missing -> 'MIS'
             if x in ("✅", "✓"):
                 return "OK "
             if x in ("❌", "✗"):
@@ -1077,8 +1089,7 @@ def write_service_location_attr_issues(wb, records):
 
         pretty_rows = []
         for row in rows_for_log:
-            fixed = row[:]
-            # columns: [SID] + ATTRS + [Attribute, Value, Issue]
+            fixed = row[:]  # columns: [SID] + ATTRS + [Attribute, Value, Issue]
             for i in range(1, 1 + len(ATTRS)):
                 fixed[i] = _logify_status(fixed[i])
             pretty_rows.append(fixed)
@@ -1087,7 +1098,6 @@ def write_service_location_attr_issues(wb, records):
         for line in format_table_lines(headers, pretty_rows):
             logger.error(f"[SL Attributes Issues] ❌ {line}")
         logger.info("==== End [SL Attributes Issues] Rows ====")
-
 
     # ── Borders & autosize
     apply_borders(ws)

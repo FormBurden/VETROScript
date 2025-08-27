@@ -33,6 +33,34 @@ def _normalize_color(c: str) -> str:
         return parts[1].strip()
     return c.strip()
 
+
+def _token_to_color(token: str) -> str:
+    """
+    Resolve a splice token to canonical color:
+      - "5 - Slate" → "Slate"
+      - startswith color → that color ("Black 1.1" → "Black")
+      - digits 1..12 → map via FIBER_COLORS
+      - else ""
+    """
+    if not token:
+        return ""
+    s = str(token).strip()
+    if " - " in s:
+        left, right = [p.strip() for p in s.split(" - ", 1)]
+        if right in FIBER_COLORS:
+            return right
+        s = left
+    sl = s.lower()
+    for name in FIBER_COLORS:
+        if sl.startswith(name.lower()):
+            return name
+    if s.isdigit():
+        i = int(s)
+        if 1 <= i <= len(FIBER_COLORS):
+            return FIBER_COLORS[i - 1]
+    return ""
+
+
 def load_nids():
     """
     Load NID points: returns list of (lat, lon, vetro_id).
@@ -94,22 +122,22 @@ def load_service_locations():
             out.append((round(lat, 6), round(lon, 6), loose, splice, svc_id))
     return out
 
+
 def find_nid_mismatches():
     """
-    For each NID, find all its fiber drops, extract the Drop Color,
-    match the far endpoint to a service location, then verify the
-    service location’s splice‐colors include that Drop Color.
+    For each NID, find all its fiber drops, extract the Drop Color, match the far
+    endpoint to a service location (skipping NAPs), then verify that the service
+    location’s Splice Colors include that Drop Color.
+    NOTE: Dot-codes like '1.3' are NOT interpreted; names win (e.g., 'Black 1.1' -> 'Black').
     """
-    nids  = load_nids()
+    nids = load_nids()
     drops = load_drops()
-    # 1) load NAPs so we can skip any drop‐end that lands on a NAP
     nap_coords, _nap_map = load_features('nap', modules.config.ID_COL)
-    svcs  = load_service_locations()
+    svcs = load_service_locations()
     issues = []
 
     for nid_lat, nid_lon, nid_vid in nids:
         for verts, raw_color, drop_id in drops:
-            # pick the endpoint opposite the NID
             start, end = verts[0], verts[-1]
             if haversine(nid_lat, nid_lon, start[0], start[1]) <= THRESHOLD_M:
                 endpoint = end
@@ -118,86 +146,62 @@ def find_nid_mismatches():
             else:
                 continue
 
-            # 2) SKIP if that endpoint is actually a NAP
-            if any(
-                haversine(endpoint[0], endpoint[1], lat, lon) <= THRESHOLD_M
-                for lat, lon in nap_coords
-            ):
+            # Skip if the far endpoint is a NAP
+            if any(haversine(endpoint[0], endpoint[1], lat, lon) <= THRESHOLD_M for lat, lon in nap_coords):
                 continue
 
-            # normalize "3 - Green" → "Green"
             drop_color = _normalize_color(raw_color)
 
-            # find matching service location (within threshold), or None
-            if svcs:
-                svc_match = next(
-                    (
-                        (lat, lon, loose, splice_str, svc_id)
-                        for lat, lon, loose, splice_str, svc_id in svcs
-                        if haversine(endpoint[0], endpoint[1], lat, lon) <= THRESHOLD_M
-                    ),
-                    None
-                )
-            else:
-                svc_match = None
+            # Find the service location that this endpoint lands on
+            svc_match = next(
+                (((lat, lon, loose, splice_str, svc_id))
+                 for lat, lon, loose, splice_str, svc_id in svcs
+                 if haversine(endpoint[0], endpoint[1], lat, lon) <= THRESHOLD_M),
+                None
+            )
 
             if not svc_match:
                 issues.append({
-                    "nid":        nid_vid,
-                    "svc_id":     "",
-                    "svc_color":  "",
-                    "drop_color": drop_color,
-                    "issue":      "No service location found at end of drop"
+                    "nid": nid_vid, "svc_id": "", "svc_color": "",
+                    "drop_color": drop_color, "issue": "No service location found at end of drop"
                 })
-            else:
-                _, _, _, splice_str, svc_id = svc_match
+                continue
 
-                # parse splice codes like "1.3,2.3" → ["1.3","2.3"]
-                # then extract the ".3" → ["3","3"] → map to ["Green","Green"]
-                splice_codes = [s.strip() for s in splice_str.split(',') if s.strip()]
-                svc_colors = []
-                for code in splice_codes:
-                    pos = code.split('.')[-1]
-                    if pos.isdigit():
-                        idx = int(pos) - 1
-                        if 0 <= idx < len(FIBER_COLORS):
-                            svc_colors.append(FIBER_COLORS[idx])
+            _, _, _, splice_str, svc_id = svc_match
 
-                # only flag if the drop_color isn't listed on the service location
-                if drop_color not in svc_colors:
-                    issues.append({
-                        "nid":        nid_vid,
-                        "svc_id":     svc_id,
-                        "svc_color":  ", ".join(svc_colors),
-                        "drop_color": drop_color,
-                        "issue":      "Splice Colors mismatch"
-                    })
+            # Parse colors from Splice Colors (names win)
+            tokens = [s.strip() for s in (splice_str or "").replace("/", ",").split(",") if s.strip()]
+            svc_colors = []
+            for tok in tokens:
+                col = _token_to_color(tok)
+                if col:
+                    svc_colors.append(col)
+
+            if drop_color not in svc_colors:
+                issues.append({
+                    "nid": nid_vid,
+                    "svc_id": svc_id,
+                    "svc_color": ", ".join(svc_colors),
+                    "drop_color": drop_color,
+                    "issue": "Splice Colors mismatch",
+                })
 
     return issues
+
 
 def iterate_nid_checks(include_ok: bool = True) -> list[dict]:
     """
     Return one row per NID→drop→service-location check.
-
-    Keys per row:
-      - nid: NID vetro_id
-      - svc_id: matched Service Location ID ('' if none)
-      - svc_color: comma-joined list of colors parsed from Splice Colors ('' if none)
-      - drop_color: normalized drop color name
-      - expected_splice: drop_color when OK; '' when not OK/unknown
-      - actual_splice: drop_color (what the drop actually used)
-      - issue: '' when OK; otherwise a short reason
+    Names dominate; dot-codes like '1.3' are not interpreted.
     """
-    nids  = load_nids()
+    nids = load_nids()
     drops = load_drops()
     nap_coords, _nap_map = load_features('nap', modules.config.ID_COL)
-    svcs  = load_service_locations()
-
+    svcs = load_service_locations()
     rows: list[dict] = []
 
     for nid_lat, nid_lon, nid_vid in nids:
         for verts, raw_color, drop_id in drops:
-            # choose the endpoint opposite the NID
             start, end = verts[0], verts[-1]
             if haversine(nid_lat, nid_lon, start[0], start[1]) <= THRESHOLD_M:
                 endpoint = end
@@ -206,51 +210,35 @@ def iterate_nid_checks(include_ok: bool = True) -> list[dict]:
             else:
                 continue
 
-            # skip if the far endpoint is actually a NAP
-            if any(
-                haversine(endpoint[0], endpoint[1], lat, lon) <= THRESHOLD_M
-                for lat, lon in nap_coords
-            ):
+            # skip NAP endpoints
+            if any(haversine(endpoint[0], endpoint[1], lat, lon) <= THRESHOLD_M for lat, lon in nap_coords):
                 continue
 
             drop_color = _normalize_color(raw_color)
 
-            # find matching service location (within threshold), or None
-            if svcs:
-                svc_match = next(
-                    (
-                        (lat, lon, loose, splice_str, svc_id)
-                        for lat, lon, loose, splice_str, svc_id in svcs
-                        if haversine(endpoint[0], endpoint[1], lat, lon) <= THRESHOLD_M
-                    ),
-                    None
-                )
-            else:
-                svc_match = None
+            svc_match = next(
+                (((lat, lon, loose, splice_str, svc_id))
+                 for lat, lon, loose, splice_str, svc_id in svcs
+                 if haversine(endpoint[0], endpoint[1], lat, lon) <= THRESHOLD_M),
+                None
+            )
 
             if not svc_match:
-                row = {
-                    "nid": nid_vid,
-                    "svc_id": "",
-                    "svc_color": "",
-                    "drop_color": drop_color,
-                    "expected_splice": "",
-                    "actual_splice": drop_color,
-                    "issue": "No service location found at end of drop",
-                }
-                rows.append(row)
+                rows.append({
+                    "nid": nid_vid, "svc_id": "", "svc_color": "",
+                    "drop_color": drop_color, "expected_splice": "",
+                    "actual_splice": drop_color, "issue": "No service location found at end of drop",
+                })
                 continue
 
-            # parse splice colors on the matched service location
             _, _, _, splice_str, svc_id = svc_match
-            splice_codes = [s.strip() for s in (splice_str or "").split(",") if s.strip()]
+
+            tokens = [s.strip() for s in (splice_str or "").replace("/", ",").split(",") if s.strip()]
             svc_colors: list[str] = []
-            for code in splice_codes:
-                pos = code.split(".")[-1]
-                if pos.isdigit():
-                    idx = int(pos) - 1
-                    if 0 <= idx < len(FIBER_COLORS):
-                        svc_colors.append(FIBER_COLORS[idx])
+            for tok in tokens:
+                col = _token_to_color(tok)
+                if col:
+                    svc_colors.append(col)
 
             ok = drop_color in svc_colors
             if ok or include_ok:
@@ -266,3 +254,65 @@ def iterate_nid_checks(include_ok: bool = True) -> list[dict]:
 
     return rows
 
+
+def build_sid_upstream_drop_color_map() -> dict[str, str]:
+    """
+    Return a mapping of Service Location ID -> upstream drop color, where:
+      - "upstream" is the color of the drop segment that runs from NID to NAP.
+      - Only SLs fed by that NID are included.
+    Uses THRESHOLD_M proximity to relate endpoints.
+    """
+    # Reuse existing loaders / constants
+    nids = load_nids()
+    drops = load_drops()
+    nap_coords, _ = load_features('nap', modules.config.ID_COL)
+    svcs = load_service_locations()
+
+    def _near(a_lat, a_lon, b_lat, b_lon) -> bool:
+        return haversine(a_lat, a_lon, b_lat, b_lon) <= THRESHOLD_M
+
+    # 1) Determine the upstream (NAP→NID) color for each NID.
+    upstream_by_nid: dict[str, str] = {}
+    for nid_lat, nid_lon, nid_vid in nids:
+        for verts, color, _drop_id in drops:
+            if not verts:
+                continue
+            start, end = verts[0], verts[-1]
+            nid_at_start = _near(nid_lat, nid_lon, start[0], start[1])
+            nid_at_end   = _near(nid_lat, nid_lon, end[0], end[1])
+            if not (nid_at_start or nid_at_end):
+                continue
+            other = end if nid_at_start else start
+            # Other endpoint must be a NAP (upstream)
+            if any(_near(other[0], other[1], lat, lon) for (lat, lon) in nap_coords):
+                # First match wins; if multiple, we keep the first consistent with data snapping.
+                upstream_by_nid[nid_vid or f"{nid_lat},{nid_lon}"] = color
+                break
+
+    if not upstream_by_nid:
+        return {}
+
+    # 2) For each NID that has an upstream color, map all SLs fed by that NID to that color.
+    sid_to_upstream: dict[str, str] = {}
+    for nid_lat, nid_lon, nid_vid in nids:
+        up_color = upstream_by_nid.get(nid_vid)
+        if not up_color:
+            continue
+        for verts, _color_downstream, _drop_id in drops:
+            if not verts:
+                continue
+            start, end = verts[0], verts[-1]
+            nid_at_start = _near(nid_lat, nid_lon, start[0], start[1])
+            nid_at_end   = _near(nid_lat, nid_lon, end[0], end[1])
+            if not (nid_at_start or nid_at_end):
+                continue
+            far = end if nid_at_start else start
+            # If the far endpoint is a service location, assign its upstream color.
+            match = next(
+                (sid for (lat, lon, _loose, _splice, sid) in svcs if _near(far[0], far[1], lat, lon)),
+                None
+            )
+            if match:
+                sid_to_upstream[match] = up_color
+
+    return sid_to_upstream

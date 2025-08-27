@@ -13,77 +13,140 @@ from modules.basic.fiber_colors import FIBER_COLORS
 logger = logging.getLogger(__name__)
 
 
-def _validate_splice_colors(raw: str) -> tuple[list[str], list[str]]:
+def _validate_splice_colors(raw: str):
     """
-    Parse a 'Splice Colors' value and return (valid_colors, invalid_tokens).
-    Rules accepted:
-      • 1–12 (numbers) → map to FIBER_COLORS[0..11]
-      • dot-coded tokens like '04.AC01.HAR.12' → take the last '.12'
-      • canonical color names that exactly match FIBER_COLORS
-    Everything else (aliases like 'Purple', misspellings like 'Gry', etc.) is invalid.
-    """
-    if not isinstance(raw, str):
-        return [], []
+    Return None if OK; otherwise a dict row with Issue='Misspelt Attribute'.
 
-    valid, bad = [], []
-    # split on common separators
-    tokens = re.split(r'[,\n;/]+', raw)
+    Accepts:
+      • Exact canonical names in _FIBER_COLORS (case-insensitive ok)
+      • "N - Name" → Name (right-hand name must be canonical)
+      • 1..12 (pure numbers) → map to _FIBER_COLORS[n-1]
+      • "ColorName 1.2" → ColorName (numeric tail ignored)
+
+    Dot-code ONLY tokens like '1.3' are NOT accepted.
+    """
+    s = _canonicalize(raw)
+    if not s:
+        return {"Attribute": "Splice Colors", "Value": "", "Issue": "Missing Attribute"}
+
+    tokens = re.split(r"[,\n;/]+", s)
+    bad = []
 
     def _by_num(nstr: str):
         try:
             n = int(nstr.strip())
         except Exception:
             return None
-        if 1 <= n <= len(FIBER_COLORS):
-            return FIBER_COLORS[n - 1]
-        return None
+        return _FIBER_COLORS[n - 1] if 1 <= n <= len(_FIBER_COLORS) else None
 
     for tok in tokens:
-        s = tok.strip()
-        if not s:
+        t = tok.strip()
+        if not t:
             continue
-        original = s
+        original = t
 
-        # If dot-coded, take the last segment and try number first (… .12)
-        if '.' in s:
-            last = s.split('.')[-1].strip()
-            if last.isdigit():
-                color = _by_num(last)
-                if color:
-                    valid.append(color); continue
-            # fall through to name handling on 'last'
-
-            # set s to last for downstream checks
-            s = last
-
-        # Handle "5 - Slate" style: prefer the explicit name on the right,
-        # else try the left number.
-        if '-' in s:
-            left, right = [p.strip() for p in s.split('-', 1)]
-            canon_right = right[:1].upper() + right[1:].lower() if right else ""
-            if canon_right in FIBER_COLORS:
-                valid.append(canon_right); continue
-            if left.isdigit():
-                color = _by_num(left)
-                if color:
-                    valid.append(color); continue
-
-        # Pure number?
-        if s.isdigit():
-            color = _by_num(s)
-            if color:
-                valid.append(color); continue
-            bad.append(original); continue
-
-        # Exact canonical name only (case-insensitive matching to canonical)
-        canon = s[:1].upper() + s[1:].lower()
-        if canon in FIBER_COLORS:
-            valid.append(canon)
-        else:
-            # Important: aliases like "Purple" (for Violet) are *not* accepted.
+        # "N - Name" → Name (prefer right)
+        if "-" in t:
+            left, right = [p.strip() for p in t.split("-", 1)]
+            if right in _FIBER_COLORS:
+                continue
+            if left.isdigit() and _by_num(left):
+                continue
             bad.append(original)
+            continue
 
-    return valid, bad
+        # startswith canonical color (handles "Black 1.1")
+        tl = t.lower()
+        if any(tl.startswith(c.lower()) for c in _FIBER_COLORS):
+            continue
+
+        # pure numeric 1..12 ok
+        if t.isdigit() and _by_num(t):
+            continue
+
+        # anything else is invalid
+        bad.append(original)
+
+    if bad:
+        return {
+            "Attribute": "Splice Colors",
+            "Value": f"{s} [invalid: {', '.join(bad)}]",
+            "Issue": "Misspelt Attribute",
+        }
+    return None
+
+
+# def _validate_splice_colors(raw: str) -> tuple[list[str], list[str]]:
+#     """
+#     Parse a 'Splice Colors' value and return (valid_colors, invalid_tokens).
+#     Rules accepted:
+#       • 1–12 (numbers) → map to FIBER_COLORS[0..11]
+#       • dot-coded tokens like '04.AC01.HAR.12' → take the last '.12'
+#       • canonical color names that exactly match FIBER_COLORS
+#     Everything else (aliases like 'Purple', misspellings like 'Gry', etc.) is invalid.
+#     """
+#     if not isinstance(raw, str):
+#         return [], []
+
+#     valid, bad = [], []
+#     # split on common separators
+#     tokens = re.split(r'[,\n;/]+', raw)
+
+#     def _by_num(nstr: str):
+#         try:
+#             n = int(nstr.strip())
+#         except Exception:
+#             return None
+#         if 1 <= n <= len(FIBER_COLORS):
+#             return FIBER_COLORS[n - 1]
+#         return None
+
+#     for tok in tokens:
+#         s = tok.strip()
+#         if not s:
+#             continue
+#         original = s
+
+#         # If dot-coded, take the last segment and try number first (… .12)
+#         if '.' in s:
+#             last = s.split('.')[-1].strip()
+#             if last.isdigit():
+#                 color = _by_num(last)
+#                 if color:
+#                     valid.append(color); continue
+#             # fall through to name handling on 'last'
+
+#             # set s to last for downstream checks
+#             s = last
+
+#         # Handle "5 - Slate" style: prefer the explicit name on the right,
+#         # else try the left number.
+#         if '-' in s:
+#             left, right = [p.strip() for p in s.split('-', 1)]
+#             canon_right = right[:1].upper() + right[1:].lower() if right else ""
+#             if canon_right in FIBER_COLORS:
+#                 valid.append(canon_right); continue
+#             if left.isdigit():
+#                 color = _by_num(left)
+#                 if color:
+#                     valid.append(color); continue
+
+#         # Pure number?
+#         if s.isdigit():
+#             color = _by_num(s)
+#             if color:
+#                 valid.append(color); continue
+#             bad.append(original); continue
+
+#         # Exact canonical name only (case-insensitive matching to canonical)
+#         canon = s[:1].upper() + s[1:].lower()
+#         if canon in FIBER_COLORS:
+#             valid.append(canon)
+#         else:
+#             # Important: aliases like "Purple" (for Violet) are *not* accepted.
+#             bad.append(original)
+
+#     return valid, bad
 
 
 def _extract_nap_id_from_path(path: str) -> str:
