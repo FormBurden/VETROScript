@@ -206,10 +206,22 @@ def _validate_dropdown(attr_name: str, raw: str, allowed: set[str]):
     return {"Attribute": attr_name, "Value": s, "Issue": "Invalid Choice"}
 
 def _validate_nap_number(raw):
-    s = _canonicalize(str(raw))
-    if not s:
+    """
+    Accept only integers or x.5 (>= 1). Treat null/blank and the text markers
+    'none'/'nan' as missing.
+    """
+    # robust canonicalization for numbers / None
+    if raw is None:
+        s = ""
+    else:
+        s = str(raw).strip()
+
+    # common text-y nulls should be "missing"
+    if not s or s.lower() in {"none", "nan"}:
         return {"Attribute": "NAP #", "Value": "", "Issue": "Missing Attribute"}
+
     # Only integers or .5 allowed, >= 1 (e.g., 24 / 24.5)
+    import re
     if re.fullmatch(r"\d+(?:\.5)?", s):
         try:
             val = float(s)
@@ -217,7 +229,9 @@ def _validate_nap_number(raw):
                 return None  # OK
         except Exception:
             pass
+
     return {"Attribute": "NAP #", "Value": s, "Issue": "Invalid Number"}
+
 
 def _validate_loose_tube(raw):
     s = _canonicalize(raw)
