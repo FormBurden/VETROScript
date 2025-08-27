@@ -232,65 +232,74 @@ def write_network_statistics(wb, stats):
 
 def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
     """
-    Create an Excel sheet named 'Distribution and NAP Walker' from the issues returned by
-    modules.hard_scripts.distribution_walker.find_deep_distribution_mismatches().
+    Create an Excel sheet named 'Distribution and NAP Walker' from the issues.
 
-    Expected issue keys (any may be absent depending on issue type):
-      - path (str)
-      - nap_id (str)
-      - dist_id (str)
-      - svc_id (str)
-      - found_drop_color (str)   # for 'Drop color not expected at NAP'
-      - drop_color (str)         # for 'Service Location splice color mismatch'
-      - svc_colors (list[str])
-      - expected_colors (list[str])
-      - found_drops (list[dict]) # {drop_id, color, distance_m}
-      - missing_colors (list[str])
-      - issue (str)
+    Columns:
+      A Path | B NAP ID | C Dist. ID | D Service Location ID | E Drop Color
+      F SL Colors | G Expected Colors | H Missing Colors | I Found Drops | J Issue
     """
+    from openpyxl.styles import Font, Alignment, PatternFill
     from modules.basic.log_configs import format_table_lines
+    from modules.basic.fiber_colors import FIBER_COLORS
+    import re
 
-    # If there are no issues and we’re not in “show all” mode, do not create the sheet.
+    # Excel fills
+    RED_FILL   = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
+    GREEN_FILL = PatternFill(start_color="00B050", end_color="00B050", fill_type="solid")
+
+    # If there are no issues and not showing empty sheets, exit.
     if not issues and not getattr(modules.config, "SHOW_ALL_SHEETS", False):
         return
 
-    # 1) Create sheet
+    # 1) Sheet + big title
     ws = wb.create_sheet(title='Distribution and NAP Walker')
 
-    # 2) Header bands
-    # Row 1: Big merged title across A..J
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=10)  # A1:J1
     title_cell = ws.cell(row=1, column=1, value='Distribution and NAP Walker')
     title_cell.font = Font(bold=True)
     title_cell.alignment = Alignment(horizontal='center')
 
-    # Row 2: "NAP Specific" merged over G..I
-    ws.merge_cells(start_row=2, start_column=7, end_row=2, end_column=9)   # G2:I2
-    nap_spec = ws.cell(row=2, column=7, value='NAP Specific')
-    nap_spec.font = Font(bold=True)
-    nap_spec.alignment = Alignment(horizontal='center')
+    # 2) Group bands
+    ws.merge_cells(start_row=2, start_column=4, end_row=2, end_column=6)  # D2:F2
+    sl_band = ws.cell(row=2, column=4, value='Service Location Data')
+    sl_band.font = Font(bold=True)
+    sl_band.alignment = Alignment(horizontal='center')
 
-    # Row 3: Column headers
+    ws.merge_cells(start_row=2, start_column=7, end_row=2, end_column=9)  # G2:I2
+    nap_band = ws.cell(row=2, column=7, value='NAP Specific')
+    nap_band.font = Font(bold=True)
+    nap_band.alignment = Alignment(horizontal='center')
+
+    # 3) Column headers (row 3)
     headers = [
         'Path', 'NAP ID', 'Dist. ID', 'Service Location ID',
-        'Drop Color', 'SL Colors', 'Expected Colors', 'Missing Colors',
-        'Found Drops', 'Issue',
+        'Drop Color', 'SL Colors',
+        'Expected Colors', 'Missing Colors', 'Found Drops',
+        'Issue',
     ]
     for c, title in enumerate(headers, start=1):
         cell = ws.cell(row=3, column=c, value=title)
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal='center')
 
-    # Lock the three header rows at top (and keep left columns behavior consistent)
-    ws.freeze_panes = 'A4'
+    ws.freeze_panes = 'A4'  # Lock header rows
 
-    # 3) Normalize helpers
+    # Helpers
     def _csv(v):
         if v is None:
             return ''
         if isinstance(v, (list, tuple, set)):
             return ', '.join(str(x) for x in v)
         return str(v)
+
+    def _split_colors(x) -> list[str]:
+        """Return a list of color strings from list/tuple or comma string."""
+        if x is None or x == '':
+            return []
+        if isinstance(x, (list, tuple, set)):
+            return [str(s).strip() for s in x if str(s).strip()]
+        s = str(x)
+        return [p.strip() for p in s.split(',') if p.strip()]
 
     def _fmt_found_drops(v):
         if not isinstance(v, (list, tuple)):
@@ -302,41 +311,325 @@ def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
             did = d.get('drop_id', '')
             col = d.get('color', '')
             dist = d.get('distance_m', '')
-            dist_part = f"d={dist}m" if dist != '' else ""
-            out.append(f"{did}={col}({dist_part})" if dist_part else f"{did}={col}")
+            if dist not in ('', None):
+                out.append(f"{did}={col}(d={dist}m)")
+            else:
+                out.append(f"{did}={col}")
         return ', '.join(out)
 
-    # 4) Rows
+    def _expected_from_nap_id(nap_id: str) -> list[str]:
+        """
+        Parse indices (only left of 'Tie Point') then map 1-based to colors.
+        Skips tokens immediately followed by 'ct', 'unit', or 'units'.
+        """
+        if not nap_id or "(" not in str(nap_id):
+            return []
+        try:
+            inside = nap_id.split("(", 1)[1].rstrip(")")
+            m_tp = re.search(r"\btie\s*point\b", inside, flags=re.IGNORECASE)
+            left = inside[:m_tp.start()] if m_tp else inside
+
+            idxs: list[int] = []
+            for m in re.finditer(r"(\d+\s*-\s*\d+|\d+)", left):
+                token = m.group(0)
+                rest = left[m.end():].lstrip().lower()
+                if rest.startswith(("ct", "unit", "units")):
+                    continue
+                if "-" in token:
+                    a, b = [int(x) for x in token.split("-", 1)]
+                    lo, hi = (a, b) if a <= b else (b, a)
+                    idxs.extend(range(lo, hi + 1))
+                else:
+                    i = int(token)
+                    if i >= 1:
+                        idxs.append(i)
+            seen = set()
+            colors: list[str] = []
+            for i in idxs:
+                c = FIBER_COLORS[(i - 1) % len(FIBER_COLORS)]
+                if c not in seen:
+                    seen.add(c)
+                    colors.append(c)
+            return colors
+        except Exception:
+            return []
+
+    # 4) Rows + coloring logic
     rows_for_log = []
     row_idx = 4
+
     for it in (issues or []):
         path = it.get('path', '')
         nap_id = it.get('nap_id', '')
         dist_id = it.get('dist_id', '')
         svc_id = it.get('svc_id', '')
+
+        # Drop Color (single)
         drop_col = it.get('found_drop_color') or it.get('drop_color', '')
-        svc_cols = _csv(it.get('svc_colors', []))
-        expected = _csv(it.get('expected_colors', []))
-        missing = _csv(it.get('missing_colors', []))
-        found_dps = _fmt_found_drops(it.get('found_drops', []))
+
+        # Service Location Colors (list/string -> list)
+        svc_colors_list = _split_colors(it.get('svc_colors'))
+        svc_cols_display = _csv(svc_colors_list if svc_colors_list else it.get('svc_colors'))
+
+        # Expected (fallback: parse from NAP ID)
+        expected_list = it.get('expected_colors') or _expected_from_nap_id(nap_id)
+
+        # Found Drops -> prefer rich; else fallback to the single drop color
+        had_rich_found = False
+        found_list_colors: list[str] = []
+        if isinstance(it.get('found_drops'), (list, tuple)) and it.get('found_drops'):
+            had_rich_found = True
+            for d in it['found_drops']:
+                c = (d or {}).get('color')
+                if c:
+                    found_list_colors.append(str(c))
+        elif drop_col:
+            found_list_colors = [str(drop_col)]
+
+        # Missing (fallback compute)
+        missing_list = it.get('missing_colors')
+        if not missing_list and expected_list:
+            s_found = set(found_list_colors)
+            missing_list = [c for c in expected_list if c not in s_found]
+
+        expected_disp = _csv(expected_list)
+        missing_disp  = _csv(missing_list)
+        found_drops_disp = _fmt_found_drops(it.get('found_drops', [])) if had_rich_found else _csv(found_list_colors)
         issue_txt = (it.get('issue') or '').strip()
 
-        row_vals = [path, nap_id, dist_id, svc_id, drop_col, svc_cols, expected, missing, found_dps, issue_txt]
+        row_vals = [path, nap_id, dist_id, svc_id, drop_col, svc_cols_display,
+                    expected_disp, missing_disp, found_drops_disp, issue_txt]
+
         for c, val in enumerate(row_vals, start=1):
             ws.cell(row=row_idx, column=c, value=val)
+
+        # === Color logic ===
+        # Incorrect value -> RED background
+        # Correct value (what it should be) -> GREEN background
+        # Rule:
+        #   - If SL Colors contain any color NOT in expected → F column RED.
+        #   - If SL Colors are non-empty AND all are within expected AND there are no missing → F column GREEN.
+        #   - If there are missing expected colors → H column GREEN (these are the needed/correct colors).
+        sl_cell = ws.cell(row=row_idx, column=6)  # F: SL Colors
+        miss_cell = ws.cell(row=row_idx, column=8)  # H: Missing Colors
+
+        set_expected = set(expected_list)
+        set_sl = set(svc_colors_list)
+
+        if set_sl:
+            if not set_sl.issubset(set_expected):
+                sl_cell.fill = RED_FILL
+            elif set_sl.issubset(set_expected) and not missing_list:
+                sl_cell.fill = GREEN_FILL
+
+        if missing_list:
+            miss_cell.fill = GREEN_FILL
 
         rows_for_log.append([str(x) if x is not None else '' for x in row_vals])
         row_idx += 1
 
-    # 5) Error-only logging (no Excel mirror)
+    # 5) Log table in logger only (non-Excel)
     if rows_for_log:
         logger.error(f"==== [Distribution and NAP Walker] Errors ({len(rows_for_log)}) ====")
         for line in format_table_lines(headers, rows_for_log):
             logger.error(f"[Distribution and NAP Walker] {line}")
         logger.info("==== End [Distribution and NAP Walker] Errors ====")
 
-    # Borders (covers merged headers + grid) — keep existing helper
+    # Final borders
     apply_borders(ws)
+
+
+# def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
+#     """
+#     Create an Excel sheet named 'Distribution and NAP Walker' from the issues
+#     returned by modules.hard_scripts.distribution_walker.find_deep_distribution_mismatches().
+
+#     Expected issue keys (any may be absent depending on issue type):
+#       - path (str)
+#       - nap_id (str)
+#       - dist_id (str)
+#       - svc_id (str)
+#       - found_drop_color (str)  # for 'Drop color not expected at NAP'
+#       - drop_color (str)        # for 'Service Location splice color mismatch'
+#       - svc_colors (list[str])
+#       - expected_colors (list[str])
+#       - found_drops (list[dict])  # {drop_id, color, distance_m}
+#       - missing_colors (list[str])
+#       - issue (str)
+#     """
+#     from modules.basic.log_configs import format_table_lines
+#     from modules.basic.fiber_colors import FIBER_COLORS
+#     import re
+
+#     # If there are no issues and we’re not in “show all” mode, do not create the sheet.
+#     if not issues and not getattr(modules.config, "SHOW_ALL_SHEETS", False):
+#         return
+
+#     # 1) Create sheet
+#     ws = wb.create_sheet(title='Distribution and NAP Walker')
+
+#     # 2) Header bands
+#     # Row 1: Big merged title across A..J
+#     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=10)  # A1:J1
+#     title_cell = ws.cell(row=1, column=1, value='Distribution and NAP Walker')
+#     title_cell.font = Font(bold=True)
+#     title_cell.alignment = Alignment(horizontal='center')
+
+#     # Row 2: "Service Location Data" merged over D..F
+#     ws.merge_cells(start_row=2, start_column=4, end_row=2, end_column=6)  # D2:F2
+#     sl_band = ws.cell(row=2, column=4, value='Service Location Data')
+#     sl_band.font = Font(bold=True)
+#     sl_band.alignment = Alignment(horizontal='center')
+
+#     # Row 2: "NAP Specific" merged over G..I
+#     ws.merge_cells(start_row=2, start_column=7, end_row=2, end_column=9)  # G2:I2
+#     nap_spec = ws.cell(row=2, column=7, value='NAP Specific')
+#     nap_spec.font = Font(bold=True)
+#     nap_spec.alignment = Alignment(horizontal='center')
+
+#     # Row 3: Column headers
+#     headers = [
+#         'Path', 'NAP ID', 'Dist. ID', 'Service Location ID',
+#         'Drop Color', 'SL Colors',
+#         'Expected Colors', 'Missing Colors', 'Found Drops',
+#         'Issue',
+#     ]
+#     for c, title in enumerate(headers, start=1):
+#         cell = ws.cell(row=3, column=c, value=title)
+#         cell.font = Font(bold=True)
+#         cell.alignment = Alignment(horizontal='center')
+
+#     # Lock the three header rows at top (and keep left columns behavior consistent)
+#     ws.freeze_panes = 'A4'
+
+#     # 3) Normalize helpers
+#     def _csv(v):
+#         if v is None:
+#             return ''
+#         if isinstance(v, (list, tuple, set)):
+#             return ', '.join(str(x) for x in v)
+#         return str(v)
+
+#     def _fmt_found_drops(v):
+#         """Keep your rich 'drop_id=color(d=..m)' when present; else empty."""
+#         if not isinstance(v, (list, tuple)):
+#             return ''
+#         out = []
+#         for d in v:
+#             if not isinstance(d, dict):
+#                 continue
+#             did = d.get('drop_id', '')
+#             col = d.get('color', '')
+#             dist = d.get('distance_m', '')
+#             dist_part = f"d={dist}m" if dist != '' else ""
+#             out.append(f"{did}={col}({dist_part})" if dist_part else f"{did}={col}")
+#         return ', '.join(out)
+
+#     def _expected_from_nap_id(nap_id: str) -> list[str]:
+#         """
+#         Parse expected drop colors from the NAP name:
+#         - Look at the text INSIDE parentheses.
+#         - Consider ONLY the portion to the LEFT of 'Tie Point' (case-insensitive).
+#         - Collect integers and ranges (skip tokens immediately followed by 'ct', 'unit', 'units').
+#         - Map 1-based indices via FIBER_COLORS with stable de-dup.
+#         """
+#         if not nap_id or "(" not in str(nap_id):
+#             return []
+#         try:
+#             inside = nap_id.split("(", 1)[1].rstrip(")")
+#             m_tp = re.search(r"\btie\s*point\b", inside, flags=re.IGNORECASE)
+#             left = inside[:m_tp.start()] if m_tp else inside
+
+#             idxs: list[int] = []
+#             for m in re.finditer(r"(\d+\s*-\s*\d+|\d+)", left):
+#                 token = m.group(0)
+#                 rest = left[m.end():].lstrip().lower()
+#                 # Skip fiber counts and unit counts that immediately follow the number
+#                 if rest.startswith(("ct", "unit", "units")):
+#                     continue
+#                 if "-" in token:
+#                     a, b = [int(x) for x in token.split("-", 1)]
+#                     lo, hi = (a, b) if a <= b else (b, a)
+#                     idxs.extend(range(lo, hi + 1))
+#                 else:
+#                     i = int(token)
+#                     if i >= 1:
+#                         idxs.append(i)
+#             # Map indices → colors with stable de-dup
+#             seen = set()
+#             colors: list[str] = []
+#             for i in idxs:
+#                 c = FIBER_COLORS[(i - 1) % len(FIBER_COLORS)]
+#                 if c not in seen:
+#                     seen.add(c)
+#                     colors.append(c)
+#             return colors
+#         except Exception:
+#             return []
+
+#     # 4) Rows (+ fallbacks that fill NAP Specific block when walker didn't)
+#     rows_for_log = []
+#     row_idx = 4
+
+#     for it in (issues or []):
+#         path = it.get('path', '')
+#         nap_id = it.get('nap_id', '')
+#         dist_id = it.get('dist_id', '')
+#         svc_id = it.get('svc_id', '')
+
+#         # Drop Color (the drop color the SL is attached to OR detected at this path)
+#         drop_col = it.get('found_drop_color') or it.get('drop_color', '')  # single color
+#         svc_cols = _csv(it.get('svc_colors', []))
+
+#         # NAP Specific — compute robust fallbacks
+#         # Expected Colors
+#         expected_list = it.get('expected_colors')
+#         if not expected_list:
+#             expected_list = _expected_from_nap_id(nap_id)
+
+#         # Found Drops -> prefer rich list, else fall back to the single drop color
+#         found_list_colors: list[str] = []
+#         had_rich_found = False
+#         if isinstance(it.get('found_drops'), (list, tuple)) and it.get('found_drops'):
+#             had_rich_found = True
+#             for d in it['found_drops']:
+#                 c = (d or {}).get('color')
+#                 if c:
+#                     found_list_colors.append(str(c))
+#         elif drop_col:
+#             found_list_colors = [str(drop_col)]
+
+#         # Missing Colors
+#         missing_list = it.get('missing_colors')
+#         if not missing_list and expected_list:
+#             # Compute expected − found (color names)
+#             s_found = set(found_list_colors)
+#             missing_list = [c for c in expected_list if c not in s_found]
+
+#         # Convert to display strings
+#         expected = _csv(expected_list)
+#         missing = _csv(missing_list)
+#         rich_found = _fmt_found_drops(it.get('found_drops', []))
+#         found_dps = rich_found if had_rich_found and rich_found else _csv(found_list_colors)
+
+#         issue_txt = (it.get('issue') or '').strip()
+
+#         row_vals = [path, nap_id, dist_id, svc_id, drop_col, svc_cols, expected, missing, found_dps, issue_txt]
+#         for c, val in enumerate(row_vals, start=1):
+#             ws.cell(row=row_idx, column=c, value=val)
+
+#         rows_for_log.append([str(x) if x is not None else '' for x in row_vals])
+#         row_idx += 1
+
+#     # 5) Error-only logging (no Excel mirror)
+#     if rows_for_log:
+#         logger.error(f"==== [Distribution and NAP Walker] Errors ({len(rows_for_log)}) ====")
+#         for line in format_table_lines(headers, rows_for_log):
+#             logger.error(f"[Distribution and NAP Walker] {line}")
+#         logger.info("==== End [Distribution and NAP Walker] Errors ====")
+
+#     # Borders (covers merged headers + grid)
+#     apply_borders(ws)
 
 
 def write_geojson_summary(
