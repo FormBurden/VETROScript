@@ -10,28 +10,85 @@ import modules.config
 
 logger = logging.getLogger(__name__)
 
-def find_missing_distribution_footage():
+
+def find_missing_distribution_footage() -> list[tuple[str, str, str, str]]:
     """
     Scan both aerial & underground distribution GeoJSONs for a Note like “1234 ft”
     (allowing commas or dots in the number, any casing of FT, and an optional trailing period).
-    Returns list of (dist_id, kind, vetro_id) for any feature whose Note doesn’t match.
+
+    Returns:
+        List of 4-tuples: (dist_id, kind, vetro_id, issue_text)
+
+    Issue buckets:
+        - Missing "Note"
+        - Note missing "ft" unit
+        - Note missing numeric value
+        - Extra text in Note (only "#### ft" allowed)
+        - Uses ' (foot) symbol without "ft" unit
+        - Invalid Note format
     """
-    mismatches = []
-    # allow commas/dots in the number and an optional apostrophe before “ft”
-    pattern = re.compile(r"^[\d,\.]+'?\s*[Ff][Tt]\.?$")
+    mismatches: list[tuple[str, str, str, str]] = []
+
+    # VALID pattern (strict): "<number>[optional '][space optional]ft[optional .]" with nothing else
+    # - number: digits with optional commas and an optional decimal part
+    full_ok_re = re.compile(r"^\s*([\d,]+(?:\.\d+)?)'?[\s]*[Ff][Tt]\.?\s*$")
+
+    # Helpers to detect partials
+    num_re = re.compile(r"[\d,]+(?:\.\d+)?")
+    ft_re  = re.compile(r"\b[Ff][Tt]\.?(?:\b|$)")
 
     for kind in ('fiber-distribution-aerial', 'fiber-distribution-underground'):
         for fn in glob.glob(f'{modules.config.DATA_DIR}/*{kind}*.geojson'):
-            with open(fn, encoding='utf-8') as f:
-                gj = json.load(f)
+            try:
+                with open(fn, encoding='utf-8') as f:
+                    gj = json.load(f)
+            except Exception as e:
+                logger.warning("[Footage] Unable to read %s: %s", fn, e)
+                continue
+
             for feat in gj.get('features', []):
-                props    = feat.get('properties', {})
-                note     = (props.get('Note') or '').strip()
-                dist_id  = props.get('ID', '')
-                vetro_id = props.get('vetro_id', '')
-                if dist_id and not pattern.match(note):
-                    mismatches.append((dist_id, kind, vetro_id))
+                props    = (feat or {}).get('properties', {}) or {}
+                note_raw = props.get('Note', None)
+                note     = (note_raw or '').strip()
+                dist_id  = props.get('ID', '') or ''
+                vetro_id = props.get('vetro_id', '') or ''
+
+                # Only flag entries that have a distribution ID
+                if not dist_id:
+                    continue
+
+                # Classify
+                if not note:
+                    issue = 'Missing "Note"'
+                elif full_ok_re.match(note):
+                    # Looks good – no issue
+                    continue
+                else:
+                    has_num = bool(num_re.search(note))
+                    has_ft  = bool(ft_re.search(note))
+
+                    # Specific buckets
+                    if not has_ft:
+                        # Special case: they used only a foot (') symbol like "1234'"
+                        if re.search(r"\d\s*'\s*$", note):
+                            issue = 'Uses \' (foot) symbol without "ft" unit'
+                        else:
+                            issue = 'Note missing "ft" unit'
+                    elif not has_num:
+                        issue = 'Note missing numeric value'
+                    else:
+                        # Has both pieces but still not matching strict shape => extra text/formatting
+                        # Only "#### ft" (with optional comma/decimal/apostrophe/period) is allowed.
+                        # Anything else is considered "extra text".
+                        if not full_ok_re.match(note):
+                            issue = 'Extra text in Note (only "#### ft" allowed)'
+                        else:
+                            issue = 'Invalid Note format'  # fallback, should rarely hit
+
+                mismatches.append((str(dist_id), str(kind), str(vetro_id), issue))
+
     return mismatches
+
 
 def find_overlength_fiber_cables(limit_ft: float = 250.0):
     """
