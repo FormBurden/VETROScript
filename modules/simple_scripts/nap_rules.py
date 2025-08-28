@@ -1,5 +1,6 @@
 # modules/simple_scripts/nap_rules.py
 import glob
+import os
 import json
 import re
 import logging
@@ -187,9 +188,6 @@ def scan_nap_spec_warnings():
     Returns:
       List[Dict[str, str]] with keys: 'NAP ID', 'Field', 'Value', 'Hint'
     """
-    import os, glob, json
-    from modules.basic.fiber_colors import FIBER_COLORS
-    import modules.config
 
     warnings = []
 

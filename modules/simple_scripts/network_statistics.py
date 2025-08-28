@@ -1,14 +1,11 @@
 # modules/simple_scripts/network_statistics.py
 
-import logging
-import glob
-import modules.config
 from modules.simple_scripts.geojson_loader import load_features, load_t3_vaults
 from modules.simple_scripts.fiber_drop import (
     load_fiber_drops,
     find_color_mismatches,
     find_missing_service_location_drops,
-    load_service_locations as fd_load_service_locations
+    load_service_locations as fd_load_service_locations,
 )
 from modules.simple_scripts.slack_loops import (
     find_slack_dist_mismatches,
@@ -17,16 +14,16 @@ from modules.simple_scripts.slack_loops import (
     invalid_slack_loops,
     find_distribution_end_tail_issues,
 )
-from modules.simple_scripts.footage_issues import find_missing_distribution_footage
+from modules.simple_scripts.footage_issues import (
+    find_missing_distribution_footage,
+    find_overlength_drop_cables,
+)
 from modules.simple_scripts.nids import find_nid_mismatches, load_nids
 from modules.simple_scripts.service_locations import check_all_service_location_attributes
-from modules.simple_scripts.nap_rules import load_nap_specs, find_nap_id_format_issues, find_nap_drop_mismatches, scan_nap_spec_warnings
-from modules.simple_scripts.pole_issues import find_power_pole_issues, load_power_poles, load_aerial_distributions, load_messenger_wire
+from modules.simple_scripts.pole_issues import load_power_poles
 from modules.simple_scripts.conduit_rules import run_all_conduit_checks
 from modules.simple_scripts.vault_rules import run_all_vault_checks
-from modules.simple_scripts.footage_issues import find_missing_distribution_footage, find_overlength_drop_cables
 
-logger = logging.getLogger(__name__)
 
 def collect_network_statistics():
     '''

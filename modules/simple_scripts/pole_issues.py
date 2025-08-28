@@ -84,20 +84,7 @@ def load_messenger_wire() -> Dict[str, List[List[Tuple[float,float]]]]:
                 mapping.setdefault(mw_id, []).append(latlon)
     return mapping
 
-def load_vaults() -> Set[Tuple[float,float]]:
-    vaults: Set[Tuple[float,float]] = set()
-    for fn in glob.glob(f"{modules.config.DATA_DIR}/*vault*.geojson"):
-        with open(fn, encoding="utf-8") as f:
-            gj = json.load(f)
-        for feat in gj.get("features", []):
-            coords = feat.get("geometry", {}).get("coordinates", [])
-            if len(coords) < 2:
-                continue
-            lon, lat = coords[:2]
-            vaults.add((round(lat,6), round(lon,6)))
-    return vaults
 
-from math import fabs
 # thresholds
 ANGLE_THRESHOLD = 40.0
 MAX_MESSENGER_HOPS = 4
