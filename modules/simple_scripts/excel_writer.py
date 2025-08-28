@@ -1266,10 +1266,10 @@ def write_service_location_attr_issues(wb, records):
                 fixed[i] = _logify_status(fixed[i])
             pretty_rows.append(fixed)
 
-        logger.error(f"==== [SL Attributes Issues] ❌ Rows ({len(pretty_rows)}) ====")
+        logger.error(f"==== [SL Attributes Issues] ({len(pretty_rows)}) ====")
         for line in format_table_lines(headers, pretty_rows):
             logger.error(f"[SL Attributes Issues] ❌ {line}")
-        logger.info("==== End [SL Attributes Issues] Rows ====")
+        logger.info("==== End [SL Attributes Issues] ====")
 
     apply_borders(ws)
     auto_size(wb)
