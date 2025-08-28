@@ -1,5 +1,4 @@
 # main.py
-from modules.config import setup_logging
 from modules.basic.log_configs import log_abbrev_header
 
 import glob
@@ -23,7 +22,6 @@ from modules.simple_scripts.geojson_loader import (
 )
 
 from modules.simple_scripts.slack_loops import (
-    needs_slack,
     invalid_slack_loops,
     find_slack_dist_mismatches,
     find_underground_slack_mismatches,
@@ -45,7 +43,7 @@ from modules.simple_scripts.nids import find_nid_mismatches
 
 from modules.simple_scripts.network_statistics import collect_network_statistics
 
-from modules.simple_scripts.service_locations import check_service_location_attributes, check_all_service_location_attributes
+from modules.simple_scripts.service_locations import check_all_service_location_attributes
 
 from modules.simple_scripts.excel_writer import (
     new_workbook,
@@ -92,7 +90,6 @@ def find_csv():
     files = glob.glob(f'{modules.config.DATA_DIR}/*.csv')
     return files[0] if files else None
 
-# main.py — replace full function below
 
 def main(data_dir=None, gui_out_path=None):
     """
@@ -238,33 +235,6 @@ def main(data_dir=None, gui_out_path=None):
         conduit_results = run_all_conduit_checks()
         emit_conduit_logs()
         vault_results   = run_all_vault_checks()
-        # DEBUG: dump only the two vaults we care about into DATA_DIR/_debug_vaults_missing.csv
-        from modules import config
-        import pandas as pd
-
-        # DEBUG: dump only the two vaults we care about (GUI-safe)
-        from modules import config
-        from pathlib import Path
-        import pandas as pd
-
-        ### DEBUG FOR VAULTS ###
-        # _debug_ids = {
-        #     "f6d14ff8-fa96-40d9-ab22-4c6c2014a6b4",
-        #     "62726729-eec0-48f9-97a5-73cd865695ef",
-        # }
-
-        # _df = pd.DataFrame(vault_results.get("vaults_missing_conduit") or [])
-        # out_csv = Path(config.DATA_DIR) / "_debug_vaults_missing.csv"
-
-        # if "Vault Vetro ID" in _df.columns:
-        #     _df[_df["Vault Vetro ID"].isin(_debug_ids)].to_csv(out_csv, index=False)
-        # else:
-        #     # create an empty file so you know the key/columns didn't match
-        #     pd.DataFrame().to_csv(out_csv, index=False)
-
-
-
-
 
         # Only create the sheets if there’s data, unless SHOW_ALL_SHEETS is on
         if modules.config.SHOW_ALL_SHEETS or any(conduit_results.values()):
@@ -368,10 +338,16 @@ def main(data_dir=None, gui_out_path=None):
             pass
         raise
 
+
 if __name__ == "__main__":
     modules.config.setup_logging()
-    issues = find_deep_distribution_mismatches()
-    for issue in issues:
-        ((logging.getLogger(__name__).debug) if str(getattr(modules.config, "LOG_DETAIL", "DEBUG")).upper() == "DEBUG" else logging.getLogger(__name__).info)(issue)
+    main()
+
+
+# if __name__ == "__main__":
+#     modules.config.setup_logging()
+#     issues = find_deep_distribution_mismatches()
+#     for issue in issues:
+#         ((logging.getLogger(__name__).debug) if str(getattr(modules.config, "LOG_DETAIL", "DEBUG")).upper() == "DEBUG" else logging.getLogger(__name__).info)(issue)
 
 

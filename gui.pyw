@@ -136,9 +136,6 @@ class SettingsDialog(tk.Toplevel):
     BOOL_KEYS = [
         "LOG_SVCLOC_DEBUG",
         "LOG_DROP_DEBUG",
-        "LOG_MIRROR_SHEETS",
-        "LOG_SLACK_LOOP_SHEET_TO_LOG",
-        "LOG_NID_SHEET_TO_LOG",
     ]
     CHOICE_KEYS = {
         "LOG_DETAIL": ["INFO", "DEBUG"],
@@ -150,9 +147,6 @@ class SettingsDialog(tk.Toplevel):
         # Examples — customize freely:
         "LOG_SVCLOC_DEBUG": "Service Locations",
         "LOG_DROP_DEBUG": "Fiber Drops",
-        "LOG_MIRROR_SHEETS": "NAP Distribution Walker",
-        "LOG_SLACK_LOOP_SHEET_TO_LOG": "Slack Loops",
-        "LOG_NID_SHEET_TO_LOG": "NIDs",
         # You can also add choice keys if you want nicer labels in the Modes section:
         # "LOG_DETAIL": "Log Detail",
         # "LOG_COLOR_MODE": "Log Color Mode",
@@ -229,9 +223,6 @@ class SettingsDialog(tk.Toplevel):
         defaults = {
             "LOG_SVCLOC_DEBUG": True,
             "LOG_DROP_DEBUG": True,
-            "LOG_MIRROR_SHEETS": True,
-            "LOG_SLACK_LOOP_SHEET_TO_LOG": True,
-            "LOG_NID_SHEET_TO_LOG": False,
             "LOG_DETAIL": "INFO",
             "LOG_COLOR_MODE": "OFF",
         }
