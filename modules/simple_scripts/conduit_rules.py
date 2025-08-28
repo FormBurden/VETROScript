@@ -77,9 +77,9 @@ def _load_underground_distributions_full() -> List[dict]:
 
         for feat in gj.get("features", []) or []:
             props = (feat.get("properties") or {}) if isinstance(feat, dict) else {}
-            geom  = (feat.get("geometry") or {}) if isinstance(feat, dict) else {}
-            coords= geom.get("coordinates") or []
-            gtyp  = (geom.get("type") or "").strip()
+            geom = (feat.get("geometry") or {}) if isinstance(feat, dict) else {}
+            coords = geom.get("coordinates") or []
+            gtyp = (geom.get("type") or "").strip()
 
             segs = []
             if gtyp == "LineString":
@@ -89,18 +89,58 @@ def _load_underground_distributions_full() -> List[dict]:
             else:
                 continue
 
-            poly: List[List[Tuple[float,float]]] = []
+            poly: List[List[Tuple[float, float]]] = []
             for seg in segs:
                 if not seg or len(seg) < 2:
                     continue
+                # store as (lat, lon) rounded to 6 places
                 poly.append([(round(lat, 6), round(lon, 6)) for lon, lat in seg])
 
             out.append({
-                "id":       (props.get("ID") or "").strip(),
+                "id": (props.get("ID") or "").strip(),
                 "vetro_id": (props.get("vetro_id") or props.get("Vetro ID") or "").strip(),
+                # NEW: carry Placement so downstream rules can add context to issues
+                "placement": (props.get("Placement") or "").strip(),
                 "segments": poly,
             })
     return out
+
+
+# def _load_underground_distributions_full() -> List[dict]:
+#     out: List[dict] = []
+#     for path in glob.glob(f"{modules.config.DATA_DIR}/*fiber-distribution-underground*.geojson"):
+#         try:
+#             with open(path, "r", encoding="utf-8") as f:
+#                 gj = json.load(f)
+#         except Exception:
+#             continue
+
+#         for feat in gj.get("features", []) or []:
+#             props = (feat.get("properties") or {}) if isinstance(feat, dict) else {}
+#             geom  = (feat.get("geometry") or {}) if isinstance(feat, dict) else {}
+#             coords= geom.get("coordinates") or []
+#             gtyp  = (geom.get("type") or "").strip()
+
+#             segs = []
+#             if gtyp == "LineString":
+#                 segs = [coords]
+#             elif gtyp == "MultiLineString":
+#                 segs = coords
+#             else:
+#                 continue
+
+#             poly: List[List[Tuple[float,float]]] = []
+#             for seg in segs:
+#                 if not seg or len(seg) < 2:
+#                     continue
+#                 poly.append([(round(lat, 6), round(lon, 6)) for lon, lat in seg])
+
+#             out.append({
+#                 "id":       (props.get("ID") or "").strip(),
+#                 "vetro_id": (props.get("vetro_id") or props.get("Vetro ID") or "").strip(),
+#                 "segments": poly,
+#             })
+#     return out
 
 
 def _collect_conduit_vertices(conduits: List[dict]) -> List[Tuple[float,float]]:
@@ -148,16 +188,20 @@ def find_conduits_without_distribution() -> List[dict]:
 # ---------------------------------------------
 # Rule: Underground DF must have conduit below
 # ---------------------------------------------
-
-
 def find_distributions_without_conduit(tolerance_ft: float | None = None) -> List[dict]:
     """
-    For each underground Distribution, require at least one conduit segment within tolerance
-    of any vertex of the distribution geometry. Uses point-to-segment distance (like the
-    vault rule) to avoid false negatives when vertices don't line up exactly.
+    For each underground Distribution, require at least one conduit segment
+    within tolerance of any vertex of the distribution geometry.
+
+    Uses point-to-segment distance (like the vault rule) to avoid false
+    negatives when vertices don't line up exactly.
 
     Returns rows:
-      { "Distribution ID": , "Vetro ID": , "Issue": "No Conduit under distribution" }
+      {
+        "Distribution ID": ,
+        "Vetro ID": ,
+        "Issue": "No Conduit under distribution[ ; Underground Distribution has Aerial placement, is this correct? If it is, disregard.]"
+      }
     """
     from math import cos, radians, sqrt
 
@@ -172,7 +216,6 @@ def find_distributions_without_conduit(tolerance_ft: float | None = None) -> Lis
         plat, plon = p
         alat, alon = a
         blat, blon = b
-
         lat0 = (plat + alat + blat) / 3.0
         m_per_deg_lat = 111320.0
         m_per_deg_lon = 111320.0 * cos(radians(lat0))
@@ -201,7 +244,6 @@ def find_distributions_without_conduit(tolerance_ft: float | None = None) -> Lis
         return sqrt(dx * dx + dy * dy)
 
     out: List[dict] = []
-
     for df in ug_dists:
         has_touch = False
 
@@ -227,10 +269,17 @@ def find_distributions_without_conduit(tolerance_ft: float | None = None) -> Lis
                 break
 
         if not has_touch:
+            issue_txt = "No Conduit under distribution"
+
+            # If the Underground DF feature's Placement says Aerial, append the guidance.
+            placement_raw = (df.get("placement") or "").strip().lower()
+            if "aerial" in placement_raw:
+                issue_txt += "; Underground Distribution has Aerial placement, is this correct? If it is, disregard."
+
             out.append({
                 "Distribution ID": df.get("id", ""),
                 "Vetro ID": df.get("vetro_id", ""),
-                "Issue": "No Conduit under distribution",
+                "Issue": issue_txt,
             })
 
     return out
