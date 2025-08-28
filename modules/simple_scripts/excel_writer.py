@@ -856,21 +856,52 @@ def write_person_sheets(wb, df: pd.DataFrame, patterns: list, id_col: str):
 #         ws.cell(row=r, column=3, value=f'{lon:.6f}')
 
 
-def write_drop_issues_sheet(wb, mismatches_or_service_coords, drop_coords=None, combined=None):
+def write_drop_issues_sheet(
+    wb,
+    mismatches_or_service_coords,
+    drop_coords=None,
+    combined=None,
+    *,
+    mismatches_list=None,
+    missing_list=None
+):
     """
     'Drop Issues' sheet.
 
-    Backwards-compatible call styles:
-      • New (current repo): write_drop_issues_sheet(wb, mismatches)
-      • Legacy (your local main.py): write_drop_issues_sheet(wb, service_coords, drop_coords, combined)
+    Parameters
+    ----------
+    wb : openpyxl.Workbook
+        Target workbook.
 
-    Only the IDs in `mismatches` / `combined` are used to render this sheet.
-    """    
+    mismatches_or_service_coords :
+        Historical, overloaded param. Kept for compatibility with existing calls.
+        - In current usage, this is a service_coords list, but this function
+          only uses `combined` for the SIDs.
+    drop_coords : unused (kept for signature compatibility)
+    combined : list[str] | set[str]
+        Unified ordered list of Service Location IDs that have a drop issue
+        (either missing drop or color mismatch).
+    mismatches_list : list[str] | set[str] | None
+        SIDs specifically flagged by color-mismatch detection.
+    missing_list : list[str] | set[str] | None
+        SIDs specifically flagged by missing-drop detection.
+    """
+    from openpyxl.styles import Alignment, Font
     from modules.basic.log_configs import format_table_lines
 
-    # --- Back-compat adapter ---
-    # If called with 4 args, `combined` is the list/dict we actually need.
-    mismatches = combined if combined is not None else mismatches_or_service_coords
+    # Normalize inputs
+    if combined is not None:
+        sids = list(combined)
+    elif isinstance(mismatches_or_service_coords, (list, tuple, set)) and all(
+        isinstance(x, str) for x in mismatches_or_service_coords
+    ):
+        # Back-compat: caller passed a list of SIDs directly
+        sids = list(mismatches_or_service_coords)
+    else:
+        sids = []
+
+    mismatch_set = set(mismatches_list or [])
+    missing_set = set(missing_list or [])
 
     # 1) Create sheet
     ws = wb.create_sheet(title='Drop Issues')
@@ -893,37 +924,47 @@ def write_drop_issues_sheet(wb, mismatches_or_service_coords, drop_coords=None, 
     for c, title in enumerate(headers, start=1):
         ws.cell(row=4, column=c, value=title)
 
-    # 4) Normalize 'mismatches' to a mapping or ordered list of SIDs
-    # Accepts: list/tuple/set of SIDs or dict {sid: missing_sid}
-    if isinstance(mismatches, dict):
-        ordered_sids = sorted(mismatches.keys())
-        getter = mismatches.get
-    else:
-        ordered_sids = sorted(mismatches or [])
-        getter = lambda _sid: None  # noqa: E731
-
-    # 5) Write rows (starting at row 5)
+    # 4) Write rows (starting at row 5)
     rows_written = []
-    for idx, sid in enumerate(ordered_sids, start=5):
-        miss_val = getter(sid)
-        ws.cell(row=idx, column=1, value=sid)
-        if miss_val:
-            ws.cell(row=idx, column=2, value=miss_val)
-        # New Issue column with short description
-        issue_text = "Missing drop or color mismatch"
-        ws.cell(row=idx, column=3, value=issue_text)
-        rows_written.append([sid, miss_val, issue_text])
+    # Keep the original natural ordering style if the caller pre-sorted, but
+    # otherwise sort naturally for stability.
+    try:
+        # use existing helper defined above in this module
+        ordered_sids = sorted(sids, key=natural_key)
+    except Exception:
+        ordered_sids = sorted(sids)
 
-    # 6) Error-only logging (no Excel mirror)
+    for r, sid in enumerate(ordered_sids, start=5):
+        is_missing = sid in missing_set
+        is_mismatch = sid in mismatch_set
+
+        # Column 2 shows the SID in the "Missing Drops" field only when missing.
+        miss_col_val = sid if is_missing else ''
+
+        # Issue text is now differentiated
+        if is_missing:
+            issue_text = 'Missing drop'
+        elif is_mismatch:
+            issue_text = 'Color mismatch'
+        else:
+            # Fallback in case `combined` contains something not in either set
+            issue_text = 'Drop issue'
+
+        ws.cell(row=r, column=1, value=sid)
+        ws.cell(row=r, column=2, value=miss_col_val)
+        ws.cell(row=r, column=3, value=issue_text)
+
+        rows_written.append([sid, miss_col_val, issue_text])
+
+    # 5) Error-only logging (no Excel mirror)
     if rows_written:
         logger.error(f"==== [Drop Issues] Errors ({len(rows_written)}) ====")
         for line in format_table_lines(headers, rows_written):
             logger.error(f"[Drop Issues] {line}")
         logger.info("==== End [Drop Issues] Errors ====")
 
-    # 7) Borders
+    # 6) Borders
     apply_borders(ws)
-
 
 
 def write_slack_loop_issues_sheet(wb, sd_issues, ug_issues, aerial_issues=None, tail_issues=None):
@@ -1452,159 +1493,6 @@ def write_service_location_attr_issues(wb, records):
 
     apply_borders(ws)
     auto_size(wb)
-
-
-# def write_service_location_attr_issues(wb, records):
-#     """
-#     Service Location Issues (single combined table)
-
-#     Columns:
-#       Service Location ID | Build Type | Building Type | Drop Type | NAP # | NAP Location | Loose Tube | Splice Colors | Attribute | Value | Issue
-
-#     Status rules per attribute (per Service Location):
-#       - 'Missing' if any issue row for (SID, Attr) has Issue == 'Missing Attribute'
-#       - '❌'      if any non-empty Issue exists for (SID, Attr) but not Missing
-#       - '✅'      otherwise
-
-#     IMPORTANT (per user request):
-#       - Only flag each Service Location once (one row per SID).
-#       - The final three columns (Attribute / Value / Issue) show ONLY a non-"Missing Attribute"
-#         issue. If a SID has only "Missing" problems, those three columns will be blank; the
-#         8 status cells will still show "Missing" for the specific attributes.
-#     """
-#     from collections import defaultdict
-#     from modules.basic.log_configs import format_table_lines
-#     from openpyxl.styles import Alignment, Font
-
-#     # Columns we show as per-attribute status cells (keep aligned with SL validation)
-#     ATTRS = [
-#         "Build Type",
-#         "Building Type",
-#         "Drop Type",
-#         "NAP #",
-#         "NAP Location",
-#         "Loose Tube",
-#         "Splice Colors",
-#     ]
-
-#     # If there's nothing to show, and not in SHOW_ALL_SHEETS mode, skip creating the sheet.
-#     if not records and not getattr(modules.config, "SHOW_ALL_SHEETS", False):
-#         return
-
-#     ws = wb.create_sheet(title="SL Attributes Issues")
-#     ws.freeze_panes = "A3"
-
-#     # ── Title (row 1)
-#     total_cols = 1 + len(ATTRS) + 3  # SID + 7 statuses + (Attribute, Value, Issue)
-#     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
-#     title = ws.cell(row=1, column=1, value="Service Location Issues")
-#     title.font = Font(bold=True)
-#     title.alignment = Alignment(horizontal="center")
-
-#     # ── Headers (row 2)
-#     headers = ["Service Location ID"] + ATTRS + ["Attribute", "Value", "Issue"]
-#     bold = Font(bold=True)
-#     center = Alignment(horizontal="center")
-#     for c, h in enumerate(headers, start=1):
-#         cell = ws.cell(row=2, column=c, value=h)
-#         cell.font = bold
-#         cell.alignment = center
-
-#     # ── Build stable SID order from the incoming issue records
-#     sid_order = []
-#     seen = set()
-#     for rec in (records or []):
-#         sid = str(rec.get("Service Location ID", "")).strip()
-#         if sid and sid not in seen:
-#             sid_order.append(sid)
-#             seen.add(sid)
-
-#     # ── Compute per-(SID, Attr) status with precedence Missing > ❌ > ✅
-#     def _bump(cur, new):
-#         order = {"✅": 0, "❌": 1, "Missing": 2}
-#         return new if order[new] > order[cur] else cur
-
-#     status = defaultdict(lambda: "✅")  # (sid, attr) -> "✅" | "❌" | "Missing"
-#     for rec in (records or []):
-#         sid = str(rec.get("Service Location ID", "")).strip()
-#         attr = str(rec.get("Attribute Problem", "")).strip()
-#         issue = str(rec.get("Issue", "")).strip()
-#         if not sid or attr not in ATTRS:
-#             continue
-#         if issue == "Missing Attribute":
-#             status[(sid, attr)] = _bump(status[(sid, attr)], "Missing")
-#         elif issue:
-#             status[(sid, attr)] = _bump(status[(sid, attr)], "❌")
-#         else:
-#             status[(sid, attr)] = _bump(status[(sid, attr)], "✅")
-
-#     # ── For each SID, pick the FIRST non-"Missing Attribute" issue (if any) to show in the final 3 cols
-#     first_non_missing_by_sid = {}
-#     for rec in (records or []):
-#         sid = str(rec.get("Service Location ID", "")).strip()
-#         if not sid or sid in first_non_missing_by_sid:
-#             continue
-#         issue_text = (rec.get("Issue") or "").strip()
-#         if issue_text and issue_text != "Missing Attribute":
-#             first_non_missing_by_sid[sid] = {
-#                 "Attribute": rec.get("Attribute", ""),
-#                 "Value": rec.get("Value", ""),
-#                 "Issue": issue_text,
-#             }
-
-#     # ── Write exactly ONE ROW per SID
-#     rows_for_log = []
-#     r = 3
-#     for sid in sid_order:
-#         row_vals = [sid]
-#         # 8 status cells (centered)
-#         for attr in ATTRS:
-#             cell_val = status[(sid, attr)]
-#             row_vals.append(cell_val)
-
-#         # Final three columns: non-missing issue (or blanks if none)
-#         chosen = first_non_missing_by_sid.get(sid, None)
-#         if chosen:
-#             row_vals.extend([chosen.get("Attribute", ""), chosen.get("Value", ""), chosen.get("Issue", "")])
-#         else:
-#             row_vals.extend(["", "", ""])
-
-#         # write to sheet
-#         for c, v in enumerate(row_vals, start=1):
-#             cell = ws.cell(row=r, column=c, value=v)
-#             if 2 <= c <= (1 + len(ATTRS)):  # center the 8 status cells
-#                 cell.alignment = center
-#         rows_for_log.append(row_vals)
-#         r += 1
-
-#     # ── Log a compact table of the rows we wrote
-#     if rows_for_log:
-#         def _logify_status(x: str) -> str:
-#             # 3-char fixed tokens for aligned logs:
-#             # ✓/✅ -> 'OK ' ; ✗/❌ -> 'ERR' ; Missing -> 'MIS'
-#             if x in ("✅", "✓"):
-#                 return "OK "
-#             if x in ("❌", "✗"):
-#                 return "ERR"
-#             if x == "Missing":
-#                 return "MIS"
-#             return x
-
-#         pretty_rows = []
-#         for row in rows_for_log:
-#             fixed = row[:]  # columns: [SID] + ATTRS + [Attribute, Value, Issue]
-#             for i in range(1, 1 + len(ATTRS)):
-#                 fixed[i] = _logify_status(fixed[i])
-#             pretty_rows.append(fixed)
-
-#         logger.error(f"==== [SL Attributes Issues] ❌ Rows ({len(pretty_rows)}) ====")
-#         for line in format_table_lines(headers, pretty_rows):
-#             logger.error(f"[SL Attributes Issues] ❌ {line}")
-#         logger.info("==== End [SL Attributes Issues] Rows ====")
-
-#     # ── Borders & autosize
-#     apply_borders(ws)
-#     auto_size(wb)
 
 
 def write_nap_issues_sheet(wb, nap_mismatches, id_format_issues):

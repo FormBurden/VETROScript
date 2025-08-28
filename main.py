@@ -304,7 +304,7 @@ def main(data_dir=None, gui_out_path=None):
         missing    = find_missing_service_location_drops(service_coords, drop_coords)
         combined   = sort_service_location_ids_like_attributes(list(set(mismatches) | set(missing)))
         if modules.config.SHOW_ALL_SHEETS or combined:
-            write_drop_issues_sheet(wb, service_coords, drop_coords, combined)
+            write_drop_issues_sheet(wb, service_coords, drop_coords, combined, mismatches_list=mismatches, missing_list=missing)
 
         # Footage Issues (Distribution Note + Fiber Cable > 250 ft)
         footage_issues = find_missing_distribution_footage()
