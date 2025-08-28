@@ -1181,7 +1181,7 @@ def write_footage_issues_sheet(wb, mismatches):
     show_all = bool(getattr(modules.config, "SHOW_ALL_SHEETS", False))
 
     # Left block (Distribution note issues)
-    left_title = "Distribution Footage Length on Notes field — Missing/Invalid Note"
+    left_title = "Distribution Footage Length on Notes field — Missing/Invalid Note - Ft/ft needs to in Note."
     left_headers = ["Distribution ID", "Type", "Vetro ID", "Issue"]
     left_rows = []
     for dist_id, kind, vetro_id in (mismatches or []):
