@@ -72,10 +72,6 @@ def find_slack_dist_mismatches():
     return mismatches
 
 
-# modules/simple_scripts/slack_loops.py
-
-# modules/simple_scripts/slack_loops.py
-
 def _load_slack_loops_with_labels_and_coords():
     """
     Return list of (lat, lon, slack_vid, fiber_label, slack_loop_label).

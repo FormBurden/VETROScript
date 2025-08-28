@@ -126,6 +126,7 @@ from tkinter import ttk, messagebox
 import traceback
 import modules.config
 
+
 class SettingsDialog(tk.Toplevel):
     """
     A modal window that lets you adjust most runtime toggles in modules.config.
@@ -137,17 +138,17 @@ class SettingsDialog(tk.Toplevel):
         "LOG_SVCLOC_DEBUG",
         "LOG_DROP_DEBUG",
     ]
+
     CHOICE_KEYS = {
         "LOG_DETAIL": ["INFO", "DEBUG"],
         "LOG_COLOR_MODE": ["OFF", "EMOJI", "ANSI"],
     }
 
-    # 👇 NEW: customizable labels for what appears in the UI
+    # Customizable labels for what appears in the UI
     DISPLAY_LABELS = {
-        # Examples — customize freely:
         "LOG_SVCLOC_DEBUG": "Service Locations",
         "LOG_DROP_DEBUG": "Fiber Drops",
-        # You can also add choice keys if you want nicer labels in the Modes section:
+        # You could also add friendlier labels for choice keys:
         # "LOG_DETAIL": "Log Detail",
         # "LOG_COLOR_MODE": "Log Color Mode",
     }
@@ -165,12 +166,13 @@ class SettingsDialog(tk.Toplevel):
         self._bool_vars = {}
         bool_frame = ttk.LabelFrame(self, text="Logs")
         bool_frame.grid(row=0, column=0, sticky="nsew", **pad)
+
         for r, key in enumerate(self.BOOL_KEYS):
             var = tk.BooleanVar(value=bool(getattr(modules.config, key, False)))
-            # 👇 use friendly label
             label = self._label_for(key)
-            ck = ttk.Checkbutton(bool_frame, text=label, variable=var)
-            ck.grid(row=r, column=0, sticky="w", padx=8, pady=3)
+            ttk.Checkbutton(bool_frame, text=label, variable=var).grid(
+                row=r, column=0, sticky="w", padx=8, pady=3
+            )
             self._bool_vars[key] = var
 
         # ------ Choice toggles ------
@@ -180,11 +182,14 @@ class SettingsDialog(tk.Toplevel):
 
         r = 0
         for key, options in self.CHOICE_KEYS.items():
-            # optional: friendlier label for choice keys too
             choice_label = self._label_for(key)
-            ttk.Label(choice_frame, text=choice_label).grid(row=r, column=0, sticky="w", padx=8, pady=3)
+            ttk.Label(choice_frame, text=choice_label).grid(
+                row=r, column=0, sticky="w", padx=8, pady=3
+            )
             var = tk.StringVar(value=str(getattr(modules.config, key, options[0])).upper())
-            cb = ttk.Combobox(choice_frame, textvariable=var, values=options, state="readonly", width=10)
+            cb = ttk.Combobox(
+                choice_frame, textvariable=var, values=options, state="readonly", width=10
+            )
             cb.grid(row=r, column=1, sticky="w", padx=8, pady=3)
             self._choice_vars[key] = var
             r += 1
@@ -196,11 +201,12 @@ class SettingsDialog(tk.Toplevel):
         ttk.Checkbutton(
             choice_frame,
             text="Include walk path in INFO logs",
-            variable=self.var_log_include_walk_path
+            variable=self.var_log_include_walk_path,
         ).grid(row=r, column=0, sticky="w", padx=8, pady=(8, 3))
 
-        # --- Service Location Attributes (inclusion toggles) ---
-        sl_attr_frame = ttk.LabelFrame(self, text="Service Location Attributes")
+        # ------ NEW: Service Location Attributes (inclusion toggles) ------
+        sl_attr_frame = ttk.LabelFrame(self, text="Service Location Attributes (to include in results or not)")
+        # Place this on the next row under Logs/Modes
         sl_attr_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=10, pady=(0, 6))
 
         self.var_include_rsvd = tk.BooleanVar(
@@ -213,29 +219,30 @@ class SettingsDialog(tk.Toplevel):
         ttk.Checkbutton(
             sl_attr_frame, text="RSVD", variable=self.var_include_rsvd
         ).grid(row=0, column=0, sticky="w", padx=8, pady=3)
-
         ttk.Checkbutton(
             sl_attr_frame, text="Future", variable=self.var_include_future
         ).grid(row=0, column=1, sticky="w", padx=8, pady=3)
 
-
-
         # ------ Buttons ------
         btns = ttk.Frame(self)
-        btns.grid(row=1, column=0, columnspan=2, sticky="ew", **pad)
+        # moved to row=2 so it sits beneath the new SL Attributes frame
+        btns.grid(row=2, column=0, columnspan=2, sticky="ew", **pad)
         btns.columnconfigure(0, weight=1)
-        ttk.Button(btns, text="Reset to Defaults", command=self._reset_defaults).grid(row=0, column=0, sticky="w")
+
+        ttk.Button(btns, text="Reset to Defaults", command=self._reset_defaults).grid(
+            row=0, column=0, sticky="w"
+        )
         ttk.Button(btns, text="Apply", command=self._apply).grid(row=0, column=1, padx=6)
         ttk.Button(btns, text="Close", command=self._close).grid(row=0, column=2)
 
+        # Key bindings
         self.bind("<Return>", lambda e: self._apply())
         self.bind("<Escape>", lambda e: self._close())
 
-    # 👇 NEW: helper that returns a friendly label or a title-cased fallback
+    # --- helper that returns a friendly label or a title-cased fallback
     def _label_for(self, key: str) -> str:
         if key in self.DISPLAY_LABELS:
             return self.DISPLAY_LABELS[key]
-        # Fallback: turn "LOG_INCLUDE_WALK_PATH" → "Log Include Walk Path"
         return key.replace("_", " ").title()
 
     def _reset_defaults(self):
@@ -255,10 +262,9 @@ class SettingsDialog(tk.Toplevel):
         # Modes checkbox default
         self.var_log_include_walk_path.set(False)
 
-        # NEW: SL Attributes inclusion toggles default (unchecked)
+        # NEW: Service Location Attributes toggles default (unchecked)
         self.var_include_rsvd.set(False)
         self.var_include_future.set(False)
-
 
     def _apply(self):
         # Push values back into modules.config
@@ -272,60 +278,36 @@ class SettingsDialog(tk.Toplevel):
         # Recompute the effective LOG_LEVEL in modules.config and re-setup logging
         try:
             modules.config.LOG_DETAIL = str(getattr(modules.config, "LOG_DETAIL", "INFO")).upper()
-            modules.config.LOG_LEVEL = 10 if modules.config.LOG_DETAIL == "DEBUG" else 20  # logging.DEBUG/INFO
+            modules.config.LOG_LEVEL = 10 if modules.config.LOG_DETAIL == "DEBUG" else 20  # DEBUG/INFO
         except Exception:
             traceback.print_exc()
 
-        # === Persist Settings → /user_prefs.json ===
-        # Build payload of GUI-controlled settings
-        settings_payload = {}
-        for k, var in self._bool_vars.items():
-            settings_payload[k] = bool(var.get())
-        for k, var in self._choice_vars.items():
-            settings_payload[k] = str(var.get()).upper()
-        settings_payload["LOG_INCLUDE_WALK_PATH"] = bool(self.var_log_include_walk_path.get())
-
-        # NEW: persist SL Attributes inclusion toggles (top-level keys for easy reads)
+        # === Persist inclusion toggles so Drop Issues & SL Attr Issues can read them ===
         modules.config.set_pref("include_rsvd_sl", bool(self.var_include_rsvd.get()))
         modules.config.set_pref("include_future_sl", bool(self.var_include_future.get()))
 
-        # Also stash them inside the Settings snapshot (useful for debugging)
-        settings_payload["INCLUDE_RSVD_SL"] = bool(self.var_include_rsvd.get())
-        settings_payload["INCLUDE_FUTURE_SL"] = bool(self.var_include_future.get())
-
-        # Save snapshot under prefs["settings"]
+        # === Snapshot the whole dialog to prefs["settings"] (optional, matches existing behavior) ===
         try:
             from modules import config as _cfg
             prefs = _cfg._load_prefs() or {}
+
+            settings_payload = {}
+            for k, var in self._bool_vars.items():
+                settings_payload[k] = bool(var.get())
+            for k, var in self._choice_vars.items():
+                settings_payload[k] = str(var.get()).upper()
+            settings_payload["LOG_INCLUDE_WALK_PATH"] = bool(self.var_log_include_walk_path.get())
+
+            # Also include the two new toggles in the snapshot (handy for debugging)
+            settings_payload["INCLUDE_RSVD_SL"] = bool(self.var_include_rsvd.get())
+            settings_payload["INCLUDE_FUTURE_SL"] = bool(self.var_include_future.get())
+
             prefs["settings"] = settings_payload
             _cfg._save_prefs(prefs)
         except Exception:
             traceback.print_exc()
 
         messagebox.showinfo("Settings", "Settings applied.\nLog output will reflect new configuration.")
-
-
-        # === NEW: Persist Settings → <Output>/user_prefs.json (the same file used by config.py) ===
-        # Build a minimal payload of the settings this dialog controls (what the user just chose).
-        settings_payload = {}
-        for k, var in self._bool_vars.items():
-            settings_payload[k] = bool(var.get())
-        for k, var in self._choice_vars.items():
-            settings_payload[k] = str(var.get()).upper()
-        settings_payload["LOG_INCLUDE_WALK_PATH"] = bool(self.var_log_include_walk_path.get())
-
-
-        # Read/merge/save via modules.config prefs helpers (writes to <Output>/user_prefs.json).
-        try:
-            from modules import config as _cfg
-            prefs = _cfg._load_prefs() or {}
-            prefs["settings"] = settings_payload
-            _cfg._save_prefs(prefs)
-        except Exception:
-            traceback.print_exc()
-
-        messagebox.showinfo("Settings", "Settings applied.\nLog output will reflect new configuration.")
-
 
     def _close(self):
         self.grab_release()
