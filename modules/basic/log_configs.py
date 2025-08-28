@@ -39,6 +39,25 @@ def log_abbrev_header(force: bool = False, logger: logging.Logger | None = None)
 
     _printed_once = True
 
+def log_issue_header(title: str, lines: list[str], logger: logging.Logger | None = None) -> None:
+    """
+    Print a header block that summarizes issue lines again at the end of a pass.
+    - 'title' becomes the banner (e.g., "[Drop Issues] Color Mismatches")
+    - 'lines' are preformatted single-line strings
+    """
+    if logger is None:
+        logger = logging.getLogger(__name__)
+    if not lines:
+        return
+
+    # Respect LOG_DETAIL: use DEBUG when LOG_DETAIL=="DEBUG", else INFO.
+    emit = logger.error
+
+    emit(f"==== {title} ({len(lines)}) ====")
+    for ln in lines:
+        emit(ln if ln is not None else "")
+    emit(f"==== End {title} ====")
+
 
 def format_table_lines(
     headers: list[str],

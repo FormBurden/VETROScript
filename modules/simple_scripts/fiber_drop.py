@@ -209,30 +209,28 @@ def load_fiber_drops():
 
 
 def find_color_mismatches(emit_info: bool = True) -> list[str]:
-    """
-    [Drop Issues] Color mismatches — same deep-walk ordering as svc-attr checks.
+    """ [Drop Issues] Color mismatches — same deep-walk ordering as svc-attr checks.
 
-    Emits:
-      • Top section (if LOG_DETAIL == "INFO" and emit_info=True): one line per SL: ✅ or ❌
-      • Bottom recap (errors-only) with header and end-header *only when emit_info=True*:
-        lines start with: "[Drop Issues] ❌ SL #"
+    Emits (now mutually exclusive to avoid duplicates):
+      • Per-SL lines (✅/❌)  — when LOG_DETAIL == "INFO" and LOG_DROP_SUMMARY_BLOCK == False
+      • Errors-only recap table — when LOG_DETAIL == "INFO" and LOG_DROP_SUMMARY_BLOCK == True
 
     Returns:
-      list[str]: Service Location IDs where the compared color is not present in the
-                 Service Location's Splice Colors.
+      list[str]: Service Location IDs where the compared drop color is not present
+                 in the Service Location's Splice Colors.
 
     IMPORTANT (NID behavior):
       - If the SL is downstream of a NID, compare against the NID's *upstream* (NAP→NID)
         drop color, not the local NID→SL segment color.
-      - Otherwise, compare the drop color found exactly at the SL point (existing behavior).
+      - Otherwise, compare the drop color found exactly at the SL point.
     """
     # --- local helpers: emoji decoration (no external deps) ---
     def _emoji_for_color(name: str) -> str:
         n = (name or "").strip().lower()
         mapping = {
-            "blue": "", "orange": "", "green": "", "brown": "",
-            "slate": "◾️", "white": "⬜", "red": "", "black": "⬛",
-            "yellow": "", "violet": "", "rose": "", "aqua": "",
+            "Blue": "🟦", "Orange": "🟧", "Green": "🟩", "Brown": "🟫",
+            "Slate": "◼️", "White": "⬜", "Red": "🟥", "Black": "⬛",
+            "Yellow": "🟨", "Violet": "🟪", "Rose": "🩷", "Aqua": "💧",
         }
         return mapping.get(n, name or "")
 
@@ -255,14 +253,20 @@ def find_color_mismatches(emit_info: bool = True) -> list[str]:
         _upstream_map = {}
 
     sl_props_by_id = _load_sl_props_by_id()
+
     detail = str(getattr(modules.config, "LOG_DETAIL", "DEBUG")).upper()
     do_info = (detail == "INFO" and emit_info)
     do_debug = bool(getattr(modules.config, "LOG_DROP_DEBUG", False))
     show_path = bool(getattr(modules.config, "LOG_INCLUDE_WALK_PATH", False))
+    prefer_summary = bool(getattr(modules.config, "LOG_DROP_SUMMARY_BLOCK", False))
 
-    service_raw = load_service_locations()   # [((lat, lon), splice_raw, sid)]
-    drops_map   = load_fiber_drops()         # {(lat, lon): '2 - Orange', ...}
-    order_map   = get_walk_order_index_map()
+    # Decide which outputs to emit (mutually exclusive in INFO mode)
+    emit_per_sl = do_info and not prefer_summary
+    emit_summary = do_info and prefer_summary
+
+    service_raw = load_service_locations()  # [((lat, lon), splice_raw, sid)]
+    drops_map = load_fiber_drops()          # {(lat, lon): '2 - Orange', ...}
+    order_map = get_walk_order_index_map()
 
     def _nap_for_sid(sid: str) -> str:
         from_path = _extract_nap_id_from_path(_paths.get(sid, ""))
@@ -280,24 +284,23 @@ def find_color_mismatches(emit_info: bool = True) -> list[str]:
 
     rows_sorted = sorted(service_raw, key=_sort_key)
 
-    if do_info:
+    if emit_per_sl:
         logger.info("==== [Drop Issues] Color Mismatches (svc-attr ordering) ====")
 
     mismatches: list[str] = []
     recap_rows: list[tuple[str, str, str, str]] = []
+
     next_ordinal = (max(order_map.values()) if order_map else 0) + 1
 
     for (pt, raw_splice, sid) in rows_sorted:
-        # Skip SLs that have no drop vertex exactly snapped to the SL point;
-        # those are handled separately by "Missing Service Location Drops".
+        # Skip SLs that have no drop *exactly* at the SL point;
+        # those are handled by "Missing Service Location Drops".
         if pt not in drops_map:
             if do_debug:
                 logger.debug(f"• [Drop] {sid}: no drop at {pt} (handled in Missing Drops)")
             continue
 
-        # Build the *effective* compared color:
-        # - If SL is behind a NID, use the upstream (NAP→NID) color.
-        # - Else, use the normalized local drop color.
+        # Effective compared color: pre-NID (if present) else local drop color
         raw_drop_local = str(drops_map.get(pt, "")).strip()
         pre_nid_color = _upstream_map.get(sid, "")  # empty if not behind NID
         if pre_nid_color:
@@ -307,41 +310,40 @@ def find_color_mismatches(emit_info: bool = True) -> list[str]:
             compared_color = _normalize_color(raw_drop_local)  # e.g., '2 - Orange' -> 'Orange'
             compared_tag = ""
 
-        # Normalize splice-colors on SL (e.g., '1.8' -> 'Black')
+        # Normalize splice-colors on SL (dot-codes ignored; only canonical names)
         splice_colors = _normalize_splice_to_colors(raw_splice)  # {'Orange', ...}
         is_match = bool(compared_color) and (compared_color in splice_colors)
 
         # --- decorate for logging (emoji if enabled) ---
         drop_disp = _decorate_color(compared_color) + compared_tag if compared_color else "(none)"
         splice_txt = "[" + ", ".join(_decorate_color(c) for c in sorted(splice_colors)) + "]"
-        path_part = ""
-        if show_path and _paths.get(sid):
-            path_part = f" — path={_paths[sid]}"
+        path_part = f" — path={_paths[sid]}" if (show_path and _paths.get(sid)) else ""
 
         sl_num = order_map.get(sid)
         if sl_num is None:
             sl_num = next_ordinal
             next_ordinal += 1
 
-        if do_info:
+        # Per-SL lines (only when selected)
+        if emit_per_sl:
             if is_match:
                 logger.info(f"[Drop Issues] ✅ SL # {sl_num}: {sid} — drop={drop_disp}; splice={splice_txt}{path_part}")
             else:
                 logger.error(f"[Drop Issues] ❌ SL # {sl_num}: {sid} — drop={drop_disp} not in {splice_txt}{path_part}")
 
+        # Collect recap rows for the table (errors only)
         if not is_match:
             mismatches.append(sid)
+            if show_path and _paths.get(sid):
+                recap_rows.append((str(sl_num), sid, drop_disp, f"{splice_txt} | {_paths[sid]}"))
+            else:
+                recap_rows.append((str(sl_num), sid, drop_disp, splice_txt))
 
-        if show_path and _paths.get(sid):
-            recap_rows.append((str(sl_num), sid, drop_disp, f"{splice_txt} | {_paths[sid]}"))
-        else:
-            recap_rows.append((str(sl_num), sid, drop_disp, splice_txt))
-
-    if do_info:
+    if emit_per_sl:
         logger.info("==== End [Drop Issues] Color Mismatches (svc-attr ordering) ====")
 
-    # Errors-only recap at the bottom of [Drop Issues] — gated by emit_info so stats pass won't duplicate it
-    if emit_info and recap_rows:
+    # Errors-only recap table (only when selected)
+    if emit_summary and recap_rows:
         logger.info("===== Drop Issues (%d) =====", len(recap_rows))
         if show_path:
             headers = ["❌ SL #", "Service Location ID", "Drop Color", "SL Colors", "Path"]
@@ -364,6 +366,165 @@ def find_color_mismatches(emit_info: bool = True) -> list[str]:
         logger.debug(f"• [Drop] Color-mismatch count: {len(mismatches)}")
 
     return mismatches
+
+
+
+# def find_color_mismatches(emit_info: bool = True) -> list[str]:
+#     """
+#     [Drop Issues] Color mismatches — same deep-walk ordering as svc-attr checks.
+
+#     Emits:
+#       • Top section (if LOG_DETAIL == "INFO" and emit_info=True): one line per SL: ✅ or ❌
+#       • Bottom recap (errors-only) with header and end-header *only when emit_info=True*:
+#         lines start with: "[Drop Issues] ❌ SL #"
+
+#     Returns:
+#       list[str]: Service Location IDs where the compared color is not present in the
+#                  Service Location's Splice Colors.
+
+#     IMPORTANT (NID behavior):
+#       - If the SL is downstream of a NID, compare against the NID's *upstream* (NAP→NID)
+#         drop color, not the local NID→SL segment color.
+#       - Otherwise, compare the drop color found exactly at the SL point (existing behavior).
+#     """
+#     # --- local helpers: emoji decoration (no external deps) ---
+#     def _emoji_for_color(name: str) -> str:
+#         n = (name or "").strip().lower()
+#         mapping = {
+#             "blue": "", "orange": "", "green": "", "brown": "",
+#             "slate": "◾️", "white": "⬜", "red": "", "black": "⬛",
+#             "yellow": "", "violet": "", "rose": "", "aqua": "",
+#         }
+#         return mapping.get(n, name or "")
+
+#     def _decorate_color(name: str) -> str:
+#         mode = str(getattr(modules.config, "LOG_COLOR_MODE", "OFF")).upper()
+#         return _emoji_for_color(name) if mode == "EMOJI" else name
+
+#     from modules.hard_scripts.distribution_walker import get_walk_order_index_map
+#     try:
+#         from modules.hard_scripts.distribution_walker import get_walk_paths_map
+#         _paths = get_walk_paths_map()
+#     except Exception:
+#         _paths = {}
+
+#     # NEW: map SL → upstream (NAP→NID) color, if behind a NID
+#     try:
+#         from modules.simple_scripts.nids import build_sid_upstream_drop_color_map
+#         _upstream_map = build_sid_upstream_drop_color_map()
+#     except Exception:
+#         _upstream_map = {}
+
+#     sl_props_by_id = _load_sl_props_by_id()
+#     detail = str(getattr(modules.config, "LOG_DETAIL", "DEBUG")).upper()
+#     do_info = (detail == "INFO" and emit_info)
+#     do_debug = bool(getattr(modules.config, "LOG_DROP_DEBUG", False))
+#     show_path = bool(getattr(modules.config, "LOG_INCLUDE_WALK_PATH", False))
+
+#     service_raw = load_service_locations()   # [((lat, lon), splice_raw, sid)]
+#     drops_map   = load_fiber_drops()         # {(lat, lon): '2 - Orange', ...}
+#     order_map   = get_walk_order_index_map()
+
+#     def _nap_for_sid(sid: str) -> str:
+#         from_path = _extract_nap_id_from_path(_paths.get(sid, ""))
+#         if from_path:
+#             return from_path
+#         props = sl_props_by_id.get(sid) or {}
+#         return str(props.get("NAP #") or props.get("NAP Number") or "").strip()
+
+#     def _sort_key(row):
+#         _pt, _splice, sid = row
+#         idx = order_map.get(sid)
+#         if idx is not None:
+#             return (0, idx, sid)
+#         return (1, _nap_numeric(_nap_for_sid(sid)), sid)
+
+#     rows_sorted = sorted(service_raw, key=_sort_key)
+
+#     if do_info:
+#         logger.info("==== [Drop Issues] Color Mismatches (svc-attr ordering) ====")
+
+#     mismatches: list[str] = []
+#     recap_rows: list[tuple[str, str, str, str]] = []
+#     next_ordinal = (max(order_map.values()) if order_map else 0) + 1
+
+#     for (pt, raw_splice, sid) in rows_sorted:
+#         # Skip SLs that have no drop vertex exactly snapped to the SL point;
+#         # those are handled separately by "Missing Service Location Drops".
+#         if pt not in drops_map:
+#             if do_debug:
+#                 logger.debug(f"• [Drop] {sid}: no drop at {pt} (handled in Missing Drops)")
+#             continue
+
+#         # Build the *effective* compared color:
+#         # - If SL is behind a NID, use the upstream (NAP→NID) color.
+#         # - Else, use the normalized local drop color.
+#         raw_drop_local = str(drops_map.get(pt, "")).strip()
+#         pre_nid_color = _upstream_map.get(sid, "")  # empty if not behind NID
+#         if pre_nid_color:
+#             compared_color = pre_nid_color
+#             compared_tag = " [pre-NID]"
+#         else:
+#             compared_color = _normalize_color(raw_drop_local)  # e.g., '2 - Orange' -> 'Orange'
+#             compared_tag = ""
+
+#         # Normalize splice-colors on SL (e.g., '1.8' -> 'Black')
+#         splice_colors = _normalize_splice_to_colors(raw_splice)  # {'Orange', ...}
+#         is_match = bool(compared_color) and (compared_color in splice_colors)
+
+#         # --- decorate for logging (emoji if enabled) ---
+#         drop_disp = _decorate_color(compared_color) + compared_tag if compared_color else "(none)"
+#         splice_txt = "[" + ", ".join(_decorate_color(c) for c in sorted(splice_colors)) + "]"
+#         path_part = ""
+#         if show_path and _paths.get(sid):
+#             path_part = f" — path={_paths[sid]}"
+
+#         sl_num = order_map.get(sid)
+#         if sl_num is None:
+#             sl_num = next_ordinal
+#             next_ordinal += 1
+
+#         if do_info:
+#             if is_match:
+#                 logger.info(f"[Drop Issues] ✅ SL # {sl_num}: {sid} — drop={drop_disp}; splice={splice_txt}{path_part}")
+#             else:
+#                 logger.error(f"[Drop Issues] ❌ SL # {sl_num}: {sid} — drop={drop_disp} not in {splice_txt}{path_part}")
+
+#         if not is_match:
+#             mismatches.append(sid)
+
+#         if show_path and _paths.get(sid):
+#             recap_rows.append((str(sl_num), sid, drop_disp, f"{splice_txt} | {_paths[sid]}"))
+#         else:
+#             recap_rows.append((str(sl_num), sid, drop_disp, splice_txt))
+
+#     if do_info:
+#         logger.info("==== End [Drop Issues] Color Mismatches (svc-attr ordering) ====")
+
+#     # Errors-only recap at the bottom of [Drop Issues] — gated by emit_info so stats pass won't duplicate it
+#     if emit_info and recap_rows:
+#         logger.info("===== Drop Issues (%d) =====", len(recap_rows))
+#         if show_path:
+#             headers = ["❌ SL #", "Service Location ID", "Drop Color", "SL Colors", "Path"]
+#             table_rows = []
+#             for sl_num, sid, dcol, sps in recap_rows:
+#                 if " | " in sps:
+#                     sp, path = sps.split(" | ", 1)
+#                 else:
+#                     sp, path = sps, ""
+#                 table_rows.append([sl_num, sid, dcol, sp, path])
+#         else:
+#             headers = ["❌ SL #", "Service Location ID", "Drop Color", "SL Colors"]
+#             table_rows = [[sl_num, sid, dcol, sps] for (sl_num, sid, dcol, sps) in recap_rows]
+
+#         for line in format_table_lines(headers, table_rows, center_headers=True):
+#             logger.error(f"[Drop Issues] {line}")
+#         logger.info("===== End Drop Issues =====")
+
+#     if do_debug:
+#         logger.debug(f"• [Drop] Color-mismatch count: {len(mismatches)}")
+
+#     return mismatches
 
 
 def find_missing_service_location_drops(service_coords=None, drop_coords=None, emit_info: bool = True):
