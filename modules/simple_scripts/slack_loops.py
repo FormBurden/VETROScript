@@ -1,14 +1,13 @@
 # modules/simple_scripts/slack_loops.py
 
-import logging
 import glob
 import json
+import re
 import modules.config
 from modules.basic.distance_utils import haversine, THRESHOLD_M
 from modules.simple_scripts.distribution import _load_underground_distributions
 from modules.simple_scripts.fiber_drop import load_fiber_drops
 
-logger = logging.getLogger(__name__)
 
 def load_slack_loops_with_labels():
     """
@@ -124,9 +123,6 @@ def find_underground_slack_mismatches(nap_coords, vault_coords, vault_map):
        joined_fiber_labels, joined_slack_labels, joined_slack_vids,
        vault_vetro_id, issue)
     """
-    import glob, json, modules.config
-    from modules.basic.distance_utils import haversine, THRESHOLD_M
-    from modules.simple_scripts.distribution import _load_underground_distributions
 
     # ——— helpers ———
     def base_id(s: str) -> str:
@@ -251,18 +247,6 @@ def find_underground_slack_mismatches(nap_coords, vault_coords, vault_map):
     return issues
 
 
-def needs_slack(lat_p: float, lon_p: float,
-                nap_coords: list[tuple],
-                slack_coords: set[tuple]) -> bool:
-    """
-    Returns True if this pole has a NAP but no Slack Loop (and thus needs one).
-    """
-    has_nap   = any(haversine(lat_p, lon_p, ln, lo) <= THRESHOLD_M
-                    for ln, lo in nap_coords)
-    has_slack = any(haversine(lat_p, lon_p, ls, lo) <= THRESHOLD_M
-                    for ls, lo in slack_coords)
-    return has_nap and not has_slack
-
 def invalid_slack_loops(power_coords: list[tuple],
                         nap_coords: list[tuple],
                         slack_coords: set[tuple]) -> list[tuple]:
@@ -329,9 +313,6 @@ def find_distribution_end_tail_issues() -> list[tuple[str, str, str, str, str]]:
       Sets a module-level parallel list `_LAST_TAIL_END_DIST_IDS` aligned to the returned rows,
       where each element is the Distribution *vetro_id* for "No slack..." rows, or "" otherwise.
     """
-    import glob, json, re
-    import modules.config
-    from modules.basic.distance_utils import haversine, THRESHOLD_M
 
     # Sidecar for excel_writer to optionally include "Distribution ID" column
     global _LAST_TAIL_END_DIST_IDS

@@ -408,25 +408,6 @@ def write_distribution_and_nap_walker_sheet(wb, issues: list[dict]):
         for c, val in enumerate(row_vals, start=1):
             ws.cell(row=row_idx, column=c, value=val)
 
-        # # === Color logic ===
-        # # Incorrect value -> RED background
-        # # Correct value (what it should be) -> GREEN background
-        # # Rule:
-        # # - If SL Colors contain any color NOT in expected → F column RED.
-        # # - If SL Colors are non-empty AND all are within expected AND there are no missing → F column GREEN.
-        # # - If there are missing expected colors → H column GREEN (these are the needed/correct colors).
-        # sl_cell = ws.cell(row=row_idx, column=6)  # F: SL Colors
-        # miss_cell = ws.cell(row=row_idx, column=8)  # H: Missing Colors
-        # set_expected = set(expected_list)
-        # set_sl = set(svc_colors_list)
-        # if set_sl:
-        #     if not set_sl.issubset(set_expected):
-        #         sl_cell.fill = RED_FILL
-        #     elif set_sl.issubset(set_expected) and not missing_list:
-        #         sl_cell.fill = GREEN_FILL
-        # if missing_list:
-        #     miss_cell.fill = GREEN_FILL
-
         rows_for_log.append([str(x) if x is not None else '' for x in row_vals])
         row_idx += 1
 
@@ -629,21 +610,6 @@ def write_person_sheets(wb, df: pd.DataFrame, patterns: list, id_col: str):
                     ws.cell(row=bot, column=1, value='IDs created but not deleted:')
                     ws.cell(row=bot, column=2, value=', '.join(diff))
     apply_borders(ws)
-
-
-# DON'T THINK I NEED THIS ANYMORE... BUT I'LL WAIT.
-# def write_missing_slack_sheet(wb, missing_poles: list, power_map: dict):
-#     """
-#     Writes the 'Fiber Missing Slack Loops' sheet.
-#     """
-#     ws = wb.create_sheet(title='Fiber Missing Slack Loops')
-#     ws.cell(row=1, column=1, value='Power Pole ID')
-#     ws.cell(row=1, column=2, value='Latitude')
-#     ws.cell(row=1, column=3, value='Longitude')
-#     for r, (lat, lon) in enumerate(missing_poles, start=2):
-#         ws.cell(row=r, column=1, value=power_map.get((round(lat,6), round(lon,6)), ''))
-#         ws.cell(row=r, column=2, value=f'{lat:.6f}')
-#         ws.cell(row=r, column=3, value=f'{lon:.6f}')
 
 
 def write_drop_issues_sheet(

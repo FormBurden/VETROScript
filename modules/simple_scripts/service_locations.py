@@ -4,7 +4,6 @@
 import logging
 import json
 import glob
-import re
 import modules.config
 from modules.basic.log_configs import log_abbrev_header, log_issue_header
 from modules.hard_scripts.distribution_walker import get_walk_order_index_map, get_walk_paths_map
@@ -75,50 +74,6 @@ def _validate_splice_colors(raw: str):
         }
     return None
 
-
-def _extract_nap_id_from_path(path: str) -> str:
-    """
-    Extract the NAP ID token from a walker path string.
-    Accepts both formats:
-      • '... → <NAP_ID> → <SVC_ID>'
-      • '<NAP_ID> → <DROP_ID> → <SVC_ID>'
-    Strategy:
-      1) Prefer the token that looks like a NAP (contains '.N<digits>').
-      2) Otherwise, if there are at least 2 tokens, use the penultimate (… → NAP → SVC).
-      3) Otherwise, fall back to the first token.
-    """
-    if not path:
-        return ""
-    tokens = [t.strip() for t in path.split("→")]
-    # Prefer the token that clearly looks like a NAP id (contains '.N')
-    for tok in tokens:
-        if ".N" in tok:
-            return tok
-    # Fallbacks (robust to either “… → NAP → SVC” or “NAP → … → SVC”)
-    if len(tokens) >= 2:
-        return tokens[-2]
-    return tokens[0] if tokens else ""
-
-
-def _sym(ok):
-    """Return a checkmark for ok=True, an X for ok=False, and a dot for neutral."""
-    if ok is True:
-        return "✅"
-    if ok is False:
-        return "❌"
-    return "•"
-
-
-# Attributes that must not be empty on each Service Location feature
-REQUIRED_ATTRIBUTES = [
-    "Build Type",
-    "Building Type",
-    "Drop Type",
-    "NAP #",
-    "NAP Location",
-    "Loose Tube",
-    "Splice Colors",
-]
 
 def load_service_locations() -> list[tuple]:
     """
@@ -241,70 +196,6 @@ def _validate_loose_tube(raw):
         return None
     # treat everything else as “misspelt/invalid”
     return {"Attribute": "Loose Tube", "Value": s, "Issue": "Misspelt Attribute"}
-
-def _validate_splice_colors(raw: str):
-    """
-    Return None if OK; otherwise a dict row with Issue='Misspelt Attribute'
-    and 'Value' echoing the raw string plus a bracketed list of invalid tokens.
-    Accepts:
-      • 1–12 (numbers) → map to canonical _FIBER_COLORS[n-1]
-      • dot-coded tokens like '04.AC01.HAR.12' → use the last '.12'
-      • exact canonical names in _FIBER_COLORS
-    Everything else → invalid.
-    """
-    s = _canonicalize(raw)
-    if not s:
-        return {"Attribute": "Splice Colors", "Value": "", "Issue": "Missing Attribute"}
-
-    tokens = re.split(r"[,\n;/]+", s)
-    bad = []
-
-    def _by_num(nstr: str):
-        try:
-            n = int(nstr.strip())
-        except Exception:
-            return None
-        return _FIBER_COLORS[n - 1] if 1 <= n <= len(_FIBER_COLORS) else None
-
-    for tok in tokens:
-        t = tok.strip()
-        if not t:
-            continue
-        original = t
-
-        # "num - Name" → prefer the right-side name; else the left number
-        if "-" in t:
-            left, right = [p.strip() for p in t.split("-", 1)]
-            if right in _FIBER_COLORS:
-                continue
-            if left.isdigit() and _by_num(left):
-                continue
-            bad.append(original)
-            continue
-
-        # dot-coded: take last segment; try number first
-        if "." in t:
-            last = t.split(".")[-1].strip()
-            if last.isdigit() and _by_num(last):
-                continue
-            t = last  # fall through as name below
-
-        if t.isdigit() and _by_num(t):
-            continue
-
-        if t in _FIBER_COLORS:
-            continue
-
-        bad.append(original)
-
-    if bad:
-        # NOTE: we keep Attribute = 'Splice Colors'; Issue is the human label
-        return {
-            "Attribute": "Splice Colors",
-            "Value": f"{s}  [invalid: {', '.join(bad)}]",
-            "Issue": "Misspelt Attribute",
-        }
-    return None
 
 
 def check_service_location_attributes(service_locations_by_id_or_path, logger=None, log_debug: bool = True):

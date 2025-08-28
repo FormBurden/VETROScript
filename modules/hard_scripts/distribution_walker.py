@@ -12,7 +12,6 @@ from modules.simple_scripts.nids import load_service_locations
 from modules.simple_scripts.nap_rules import load_nap_specs
 from modules.simple_scripts.nids import load_drops
 from modules.basic.fiber_colors import FIBER_COLORS
-from modules.basic.log_configs import log_abbrev_header
 
 logger = logging.getLogger(__name__)
 
@@ -203,42 +202,6 @@ def _normalize_color(c: str | None) -> str | None:
         return cap
     return s  # last resort: return as-is
 
-def _parse_expected_from_nap_id(nap_id: str) -> list[str]:
-    """
-    From '04.AC01.HAR.N2 (24ct, 2-4)' -> ['Orange','Green','Brown'].
-    Handles single 'k', range 'i-j', or 'list like 2,4,6'.
-    """
-    if not nap_id or "(" not in nap_id:
-        return []
-    try:
-        inside = nap_id.split("(", 1)[1].rstrip(")")
-        # e.g. '24ct, 2-4' or '48ct, 1' or '24ct, 2,4,6'
-        parts = [p.strip() for p in inside.split(",")]
-        if len(parts) < 2:
-            return []
-        idxs_str = parts[1].split("/", 1)[0].strip()
-        idxs: list[int] = []
-        if "-" in idxs_str:
-            a, b = [int(x) for x in idxs_str.split("-", 1)]
-            idxs = list(range(a, b + 1))
-        else:
-            # could be "2" or "2,4,6"
-            idxs = [int(x.strip()) for x in idxs_str.split() if x.strip().isdigit()]
-            if not idxs:  # try comma split
-                idxs = [int(x.strip()) for x in idxs_str.split(",") if x.strip().isdigit()]
-        colors: list[str] = []
-        seen = set()
-        for i in idxs:
-            if i <= 0:
-                continue
-            col = FIBER_COLORS[(i - 1) % len(FIBER_COLORS)]
-            if col not in seen:
-                seen.add(col)
-                colors.append(col)
-        return colors
-    except Exception:
-        return []
-
 
 def _parse_svc_splice_colors(value: str | None) -> list[str]:
     """
@@ -400,16 +363,6 @@ def collect_drops_by_pt():
 # Helpers: NAP proximity & DF resolution
 # ---------------------------
 
-def find_nearby_nap(pt, nap_coords, nap_map):
-    """
-    Given a point (lat,lon), return (nap_id, nap_pt) if any nap is within THRESHOLD_M.
-    Else return (None, None).
-    """
-    plat, plon = pt
-    for nlat, nlon in nap_coords:
-        if haversine(plat, plon, nlat, nlon) <= THRESHOLD_M:
-            return nap_map.get((nlat, nlon)), (nlat, nlon)
-    return None, None
 
 def _df_letter(dist_id):
     """
