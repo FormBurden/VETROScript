@@ -201,18 +201,14 @@ def _validate_loose_tube(raw):
 def check_service_location_attributes(service_locations_by_id_or_path, logger=None, log_debug: bool = True):
     """
     VALIDATION + ORDERING:
-      • Maintains deep-walk path order (then stable NAP grouping for unknowns).
-      • Returns rows with: 'Service Location ID', 'Attribute', 'Value', 'Issue'.
+    • Maintains deep-walk path order (then stable NAP grouping for unknowns).
+    • Returns rows with: 'Service Location ID', 'Attribute', 'Value', 'Issue'.
 
     Rules:
-      - Build Type, Building Type, Drop Type, NAP Location:
-          * must be exactly one of the allowed values; empty → Missing Attribute
-      - NAP #:
-          * must be numeric (N or N.5), >= 1; empty → Missing Attribute
-      - Loose Tube:
-          * must be one of 6 canonical colors; empty → Missing Attribute; else Misspelt Attribute
-      - Splice Colors:
-          * must parse to 1–12 canonical colors; empty → Missing Attribute; else Misspelt Attribute on bad tokens
+    - Build Type, Building Type, Drop Type, NAP Location: * must be exactly one of the allowed values; empty → Missing Attribute
+    - NAP #: * must be numeric (N or N.5), >= 1; empty → Missing Attribute
+    - Loose Tube: * must be one of 6 canonical colors; empty → Missing Attribute; else Misspelt Attribute
+    - Splice Colors: * must parse to 1–12 canonical colors; empty → Missing Attribute; else Misspelt Attribute on bad tokens
     """
     import json, re, logging
     import modules.config
@@ -220,11 +216,11 @@ def check_service_location_attributes(service_locations_by_id_or_path, logger=No
     from modules.hard_scripts.distribution_walker import (
         get_walk_order_index_map, get_walk_paths_map
     )
-
     logger = logger or logging.getLogger(__name__)
-    detail = str(getattr(modules.config, "LOG_DETAIL", "DEBUG")).upper()
-    do_info = (detail == "INFO" and log_debug)
-    do_debug = bool(log_debug and getattr(modules.config, "LOG_SVCLOC_DEBUG", False))
+
+    detail    = str(getattr(modules.config, "LOG_DETAIL", "DEBUG")).upper()
+    do_info   = (detail == "INFO" and log_debug)
+    do_debug  = bool(log_debug and getattr(modules.config, "LOG_SVCLOC_DEBUG", False))
     show_path = bool(getattr(modules.config, "LOG_INCLUDE_WALK_PATH", False))
 
     # Load either dict or single file
@@ -258,6 +254,7 @@ def check_service_location_attributes(service_locations_by_id_or_path, logger=No
         _paths = {}
 
     BIG = 10**9
+
     def _extract_n_from_path(path_str: str) -> str:
         if not path_str:
             return ""
@@ -296,12 +293,21 @@ def check_service_location_attributes(service_locations_by_id_or_path, logger=No
     rows: list[dict] = []
     header_lines: list[str] = []
 
+    # NEW: read inclusion toggles once
+    _include_rsvd   = bool(modules.config.get_pref("include_rsvd_sl", False))
+    _include_future = bool(modules.config.get_pref("include_future_sl", False))
+
     for sid in ids:
         props = sl_props_by_id.get(sid) or {}
         sl_num = order_map.get(sid)
         if sl_num is None:
             sl_num = next_ordinal
             next_ordinal += 1
+
+        # NEW: skip RSVD/Future by default (unless toggled ON in Settings)
+        bt = str(props.get("Build Type") or "").strip().lower()
+        if (bt == "rsvd" and not _include_rsvd) or (bt == "future" and not _include_future):
+            continue
 
         # 1) Pick-list attributes
         for attr, allowed in (
@@ -333,7 +339,6 @@ def check_service_location_attributes(service_locations_by_id_or_path, logger=No
         if do_info:
             path_part = f" — path={_paths[sid]}" if (show_path and _paths.get(sid)) else ""
             if any(r["Service Location ID"] == sid for r in rows):
-                # collect issues for this SID for the summary line
                 kinds = ", ".join(sorted({r["Issue"] for r in rows if r["Service Location ID"] == sid}))
                 logger.info(f"[Check Service Location Attributes] ❌ SL # {sl_num}: {sid} — {kinds}{path_part}")
                 header_lines.append(f"SL # {sl_num}: {sid} — {kinds}{path_part}")
@@ -345,8 +350,158 @@ def check_service_location_attributes(service_locations_by_id_or_path, logger=No
 
     if do_debug:
         logger.debug(f"• [SvcLoc] Total SL attribute rows (incl. spelling/choice/number): {len(rows)}")
-
     return rows
+
+
+# def check_service_location_attributes(service_locations_by_id_or_path, logger=None, log_debug: bool = True):
+#     """
+#     VALIDATION + ORDERING:
+#       • Maintains deep-walk path order (then stable NAP grouping for unknowns).
+#       • Returns rows with: 'Service Location ID', 'Attribute', 'Value', 'Issue'.
+
+#     Rules:
+#       - Build Type, Building Type, Drop Type, NAP Location:
+#           * must be exactly one of the allowed values; empty → Missing Attribute
+#       - NAP #:
+#           * must be numeric (N or N.5), >= 1; empty → Missing Attribute
+#       - Loose Tube:
+#           * must be one of 6 canonical colors; empty → Missing Attribute; else Misspelt Attribute
+#       - Splice Colors:
+#           * must parse to 1–12 canonical colors; empty → Missing Attribute; else Misspelt Attribute on bad tokens
+#     """
+#     import json, re, logging
+#     import modules.config
+#     from modules.basic.log_configs import log_abbrev_header, log_issue_header
+#     from modules.hard_scripts.distribution_walker import (
+#         get_walk_order_index_map, get_walk_paths_map
+#     )
+
+#     logger = logger or logging.getLogger(__name__)
+#     detail = str(getattr(modules.config, "LOG_DETAIL", "DEBUG")).upper()
+#     do_info = (detail == "INFO" and log_debug)
+#     do_debug = bool(log_debug and getattr(modules.config, "LOG_SVCLOC_DEBUG", False))
+#     show_path = bool(getattr(modules.config, "LOG_INCLUDE_WALK_PATH", False))
+
+#     # Load either dict or single file
+#     sl_props_by_id: dict[str, dict] = {}
+#     if isinstance(service_locations_by_id_or_path, dict):
+#         sl_props_by_id = service_locations_by_id_or_path
+#     elif isinstance(service_locations_by_id_or_path, str):
+#         src_path = service_locations_by_id_or_path
+#         try:
+#             with open(src_path, "r", encoding="utf-8") as f:
+#                 gj = json.load(f)
+#             for feat in gj.get("features", []):
+#                 props = (feat.get("properties") or {}) if isinstance(feat, dict) else {}
+#                 sid = (props.get("Service Location ID") or props.get("ID") or props.get("vetro_id") or "").strip()
+#                 if sid:
+#                     sl_props_by_id[sid] = props
+#         except Exception as e:
+#             logger.error(f"[SvcLoc] Failed to load {src_path}: {e}")
+#             return []
+#     else:
+#         logger.error(f"[SvcLoc] Unsupported input type: {type(service_locations_by_id_or_path)}")
+#         return []
+
+#     log_abbrev_header()
+
+#     # Walker order & paths
+#     order_map = get_walk_order_index_map()  # {sid: 1..N}
+#     try:
+#         _paths = get_walk_paths_map()        # {sid: "T3 → DF → NAP …"}
+#     except Exception:
+#         _paths = {}
+
+#     BIG = 10**9
+#     def _extract_n_from_path(path_str: str) -> str:
+#         if not path_str:
+#             return ""
+#         tokens = [t.strip() for t in path_str.split("→")]
+#         for t in tokens:
+#             if re.search(r"\bN\s*#?\s*\d+\b", t):
+#                 return t
+#         return ""
+
+#     def _nap_from_props(sid: str) -> str:
+#         props = sl_props_by_id.get(sid) or {}
+#         return str(props.get("NAP #") or props.get("NAP Number") or "").strip()
+
+#     def _nap_numeric(nap_id: str) -> int:
+#         if not nap_id:
+#             return BIG
+#         m = re.search(r"\bN\s*#?\s*(\d+)\b", nap_id, re.IGNORECASE)
+#         if m:
+#             return int(m.group(1))
+#         if nap_id.isdigit():
+#             return int(nap_id)
+#         return BIG
+
+#     def _nap_for_sid(sid: str) -> str:
+#         return _extract_n_from_path(_paths.get(sid, "")) or _nap_from_props(sid)
+
+#     def _sort_key(sid: str):
+#         idx = order_map.get(sid)
+#         if idx is not None:
+#             return (0, idx, sid)
+#         return (1, _nap_numeric(_nap_for_sid(sid)), sid)
+
+#     ids = sorted(sl_props_by_id.keys(), key=_sort_key)
+#     next_ordinal = (max(order_map.values()) if order_map else 0) + 1
+
+#     rows: list[dict] = []
+#     header_lines: list[str] = []
+
+#     for sid in ids:
+#         props = sl_props_by_id.get(sid) or {}
+#         sl_num = order_map.get(sid)
+#         if sl_num is None:
+#             sl_num = next_ordinal
+#             next_ordinal += 1
+
+#         # 1) Pick-list attributes
+#         for attr, allowed in (
+#             ("Build Type", _ALLOWED_BUILD_TYPE),
+#             ("Building Type", _ALLOWED_BUILDING_TYPE),
+#             ("Drop Type", _ALLOWED_DROP_TYPE),
+#             ("NAP Location", _ALLOWED_NAP_LOCATION),
+#         ):
+#             res = _validate_dropdown(attr, props.get(attr), allowed)
+#             if res:
+#                 rows.append({"Service Location ID": sid, **res})
+
+#         # 2) NAP #
+#         res = _validate_nap_number(props.get("NAP #"))
+#         if res:
+#             rows.append({"Service Location ID": sid, **res})
+
+#         # 3) Loose Tube
+#         res = _validate_loose_tube(props.get("Loose Tube"))
+#         if res:
+#             rows.append({"Service Location ID": sid, **res})
+
+#         # 4) Splice Colors
+#         res = _validate_splice_colors(props.get("Splice Colors"))
+#         if res:
+#             rows.append({"Service Location ID": sid, **res})
+
+#         # Per-line logging (INFO mode)
+#         if do_info:
+#             path_part = f" — path={_paths[sid]}" if (show_path and _paths.get(sid)) else ""
+#             if any(r["Service Location ID"] == sid for r in rows):
+#                 # collect issues for this SID for the summary line
+#                 kinds = ", ".join(sorted({r["Issue"] for r in rows if r["Service Location ID"] == sid}))
+#                 logger.info(f"[Check Service Location Attributes] ❌ SL # {sl_num}: {sid} — {kinds}{path_part}")
+#                 header_lines.append(f"SL # {sl_num}: {sid} — {kinds}{path_part}")
+#             else:
+#                 logger.info(f"[Check Service Location Attributes] ✅ SL # {sl_num}: {sid}{path_part}")
+
+#     if header_lines:
+#         log_issue_header("[Check Service Location Attributes] Attribute Problems", header_lines, logger=logger)
+
+#     if do_debug:
+#         logger.debug(f"• [SvcLoc] Total SL attribute rows (incl. spelling/choice/number): {len(rows)}")
+
+#     return rows
 
 
 def check_all_service_location_attributes(log_debug: bool = True):

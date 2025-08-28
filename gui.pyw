@@ -199,6 +199,26 @@ class SettingsDialog(tk.Toplevel):
             variable=self.var_log_include_walk_path
         ).grid(row=r, column=0, sticky="w", padx=8, pady=(8, 3))
 
+        # --- Service Location Attributes (inclusion toggles) ---
+        sl_attr_frame = ttk.LabelFrame(self, text="Service Location Attributes")
+        sl_attr_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=10, pady=(0, 6))
+
+        self.var_include_rsvd = tk.BooleanVar(
+            value=bool(modules.config.get_pref("include_rsvd_sl", False))
+        )
+        self.var_include_future = tk.BooleanVar(
+            value=bool(modules.config.get_pref("include_future_sl", False))
+        )
+
+        ttk.Checkbutton(
+            sl_attr_frame, text="RSVD", variable=self.var_include_rsvd
+        ).grid(row=0, column=0, sticky="w", padx=8, pady=3)
+
+        ttk.Checkbutton(
+            sl_attr_frame, text="Future", variable=self.var_include_future
+        ).grid(row=0, column=1, sticky="w", padx=8, pady=3)
+
+
 
         # ------ Buttons ------
         btns = ttk.Frame(self)
@@ -231,7 +251,14 @@ class SettingsDialog(tk.Toplevel):
                 self._bool_vars[k].set(bool(v))
             elif k in self._choice_vars:
                 self._choice_vars[k].set(str(v).upper())
+
+        # Modes checkbox default
         self.var_log_include_walk_path.set(False)
+
+        # NEW: SL Attributes inclusion toggles default (unchecked)
+        self.var_include_rsvd.set(False)
+        self.var_include_future.set(False)
+
 
     def _apply(self):
         # Push values back into modules.config
@@ -248,6 +275,35 @@ class SettingsDialog(tk.Toplevel):
             modules.config.LOG_LEVEL = 10 if modules.config.LOG_DETAIL == "DEBUG" else 20  # logging.DEBUG/INFO
         except Exception:
             traceback.print_exc()
+
+        # === Persist Settings → /user_prefs.json ===
+        # Build payload of GUI-controlled settings
+        settings_payload = {}
+        for k, var in self._bool_vars.items():
+            settings_payload[k] = bool(var.get())
+        for k, var in self._choice_vars.items():
+            settings_payload[k] = str(var.get()).upper()
+        settings_payload["LOG_INCLUDE_WALK_PATH"] = bool(self.var_log_include_walk_path.get())
+
+        # NEW: persist SL Attributes inclusion toggles (top-level keys for easy reads)
+        modules.config.set_pref("include_rsvd_sl", bool(self.var_include_rsvd.get()))
+        modules.config.set_pref("include_future_sl", bool(self.var_include_future.get()))
+
+        # Also stash them inside the Settings snapshot (useful for debugging)
+        settings_payload["INCLUDE_RSVD_SL"] = bool(self.var_include_rsvd.get())
+        settings_payload["INCLUDE_FUTURE_SL"] = bool(self.var_include_future.get())
+
+        # Save snapshot under prefs["settings"]
+        try:
+            from modules import config as _cfg
+            prefs = _cfg._load_prefs() or {}
+            prefs["settings"] = settings_payload
+            _cfg._save_prefs(prefs)
+        except Exception:
+            traceback.print_exc()
+
+        messagebox.showinfo("Settings", "Settings applied.\nLog output will reflect new configuration.")
+
 
         # === NEW: Persist Settings → <Output>/user_prefs.json (the same file used by config.py) ===
         # Build a minimal payload of the settings this dialog controls (what the user just chose).
