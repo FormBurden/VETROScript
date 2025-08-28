@@ -17,7 +17,6 @@ from modules.basic.distance_utils import haversine, THRESHOLD_M
 from modules.simple_scripts.geojson_loader import (
     load_features,
     load_slack_loops,
-    load_fiber_distribution,
     load_t3_vaults,
 )
 
@@ -170,7 +169,6 @@ def main(data_dir=None, gui_out_path=None):
         t3_coords,    t3_map    = load_t3_vaults()
         power_coords, power_map = load_features('power-pole', 'ID')
         slack_raw               = load_slack_loops()
-        dist_coords             = load_fiber_distribution()
 
         # 3) Analyze Slack Loops
         slack_counter  = Counter(slack_raw)

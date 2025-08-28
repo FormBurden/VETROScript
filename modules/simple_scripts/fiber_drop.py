@@ -12,9 +12,6 @@ from modules.basic.log_configs import log_issue_header, format_table_lines
 
 logger = logging.getLogger(__name__)
 
-# INFO one-shot guards to avoid duplicate INFO outputs if functions run multiple times
-_INFO_COLOR_EMITTED = False
-_INFO_MISSING_EMITTED = False
 
 def _load_sl_props_by_id() -> dict:
     """
@@ -72,74 +69,6 @@ def _nap_numeric(nap_id: str) -> int:
         return int(nap_id)
     return 10**9
 
-def _sym(ok):
-    """
-    Return a colored 'button' for pass/fail that renders in plain-text logs.
-    True  -> green check button
-    False -> red square + X
-    None  -> neutral bullet
-    """
-    if ok is True:
-        return "✅"      # green box with check
-    if ok is False:
-        return "❌"     # red box with X
-    return "•"
-
-def _color_emoji(name: str) -> str:
-    """
-    Return just a color glyph (no name) so logs read like:
-      drop=🟧; splice=[🟧, 🟦]
-    """
-    m = {
-        "Blue": "🟦",
-        "Orange": "🟧",
-        "Green": "🟩",
-        "Brown": "🟫",
-        "Slate": "◼️",
-        "White": "⬜",
-        "Red": "🟥",
-        "Black": "⬛",
-        "Yellow": "🟨",
-        "Violet": "🟪",
-        "Rose": "🩷",
-        "Aqua": "💧",
-    }
-    return m.get(name, "◻️")
-
-
-def _color_ansi(name: str) -> str:
-    """
-    256-color background with contrasting foreground; resets at end.
-    """
-    # bg is 48;5;N, fg is 38;5;N
-    palette = {
-        "Blue":   (231, 21),   # white on deep blue
-        "Orange": (16, 208),   # black on orange
-        "Green":  (16, 34),    # black on green
-        "Brown":  (231, 94),   # white on brown
-        "Slate":  (231, 240),  # white on gray
-        "White":  (16, 15),    # black on white
-        "Red":    (231, 196),  # white on red
-        "Black":  (231, 0),    # white on black
-        "Yellow": (16, 226),   # black on yellow
-        "Violet": (231, 93),   # white on violet
-        "Rose":   (16, 213),   # black on pink
-        "Aqua":   (16, 51),    # black on cyan
-    }
-    fg, bg = palette.get(name, (231, 240))
-    return f"\x1b[38;5;{fg};48;5;{bg}m{name}\x1b[0m"
-
-def _colorize(name: str) -> str:
-    mode = str(getattr(modules.config, "LOG_COLOR_MODE", "EMOJI")).upper()
-    if mode == "OFF":
-        return name
-    if mode == "ANSI":
-        return _color_ansi(name)
-    return _color_emoji(name)  # EMOJI (default)
-
-# Internal one-shot guards to avoid duplicate debug output when functions are called multiple times
-_DEBUG_COLOR_EMITTED = False
-_DEBUG_MISSING_EMITTED = False
 
 # Helper to drill down nested lists until we find a [lon, lat] pair
 def _get_lon_lat(coords):
@@ -170,8 +99,6 @@ def _normalize_color(c: str) -> str:
         return parts[1].strip()
     return c.strip()
 
-
-# (Put at the same place where the old helpers are defined)
 
 def _token_to_canonical_color(token: str) -> str:
     """

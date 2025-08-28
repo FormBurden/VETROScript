@@ -1,5 +1,5 @@
 # modules/simple_scripts/footage_issues.py
-# Footage-related checks (moved from distribution.py)
+# Footage-related checks
 
 import logging
 import glob
@@ -103,9 +103,6 @@ def find_overlength_fiber_cables(limit_ft: float = 250.0):
       - Looks in drop + distribution + common cable patterns.
       - TYPE is derived from 'Placement' first, else from filename.
     """
-    import glob
-    import json
-    import re
 
     logger = logging.getLogger(__name__)
 
@@ -194,9 +191,6 @@ def find_overlength_drop_cables(limit_ft: float = 250.0):
       - Uses modules.config.DATA_DIR for files.
       - 'Type' comes from properties['Type'] when present; defaults to 'Fiber - Drop'.
     """
-    import glob
-    import json
-    import modules.config
 
     def _to_feet(raw):
         if isinstance(raw, (int, float)):
