@@ -42,8 +42,8 @@ def collect_network_statistics():
     Gather counts and names for network components and issue totals.
 
     Returns a dict consumed by excel_writer.write_network_statistics(), including:
-    - nap_mismatch_issues, nap_naming_issues, nap_spec_warnings
-    - dist_nap_walker_issues is still set in main.py after the deep walk
+      - nap_mismatch_issues, nap_naming_issues, nap_spec_warnings
+      - dist_nap_walker_issues is still set in main.py after the deep walk
     """
     # NAP count
     nap_coords, nap_map = load_features('nap', 'ID')
@@ -69,14 +69,15 @@ def collect_network_statistics():
     vault_coords, vault_map = load_features('vault', 'vetro_id')
     t3_set = {(round(lat, 6), round(lon, 6)) for (lat, lon) in t3_coords}
     vault_count_excl_t3 = sum(
-        1 for (lat, lon) in vault_coords if (round(lat, 6), round(lon, 6)) not in t3_set
+        1 for (lat, lon) in vault_coords
+        if (round(lat, 6), round(lon, 6)) not in t3_set
     )
 
     # Fiber-Drop issues
     drops = load_fiber_drops()
     fiber_drop_issues = (
-        len(find_color_mismatches(emit_info=False))
-        + len(find_missing_service_location_drops(fd_load_service_locations(), drops, emit_info=False))
+        len(find_color_mismatches(emit_info=False)) +
+        len(find_missing_service_location_drops(fd_load_service_locations(), drops, emit_info=False))
     )
 
     # Slack-related issues
@@ -89,8 +90,8 @@ def collect_network_statistics():
 
     # Footage issues (Distribution Note missing/invalid + Drops > 250 ft)
     footage_issues = (
-        len(find_missing_distribution_footage())
-        + len(find_overlength_drop_cables(limit_ft=250.0) or [])
+        len(find_missing_distribution_footage()) +
+        len(find_overlength_drop_cables(limit_ft=250.0) or [])
     )
 
     # NID & Service-Location attribute issues
@@ -105,10 +106,14 @@ def collect_network_statistics():
 
     # NEW: NAP totals for the PON sheet
     nap_mismatch_issues = len(find_nap_drop_mismatches() or [])
-    nap_naming_issues = len(find_nap_id_format_issues() or [])
-    nap_spec_warnings = len(scan_nap_spec_warnings() or [])
+    nap_naming_issues  = len(find_nap_id_format_issues() or [])
+    # De-dupe spec warnings so PON Statistics matches the NAP Issues sheet
+    nap_spec_warnings = len({
+        (str(w.get('NAP ID', '')), str(w.get('Field', '')), str(w.get('Value', '')).strip().lower())
+        for w in (scan_nap_spec_warnings() or [])
+    })
 
-    # NEW: Power Pole anchor issues count (same logic as main.py uses to build the sheet)
+    # NEW: Power Pole anchor issues (same logic main.py uses to build the sheet)
     poles = load_power_poles()
     distribution_features = load_aerial_distributions()
     messenger_segments = load_messenger_wire()

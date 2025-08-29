@@ -1278,20 +1278,31 @@ def write_service_location_attr_issues(wb, records):
 def write_nap_issues_sheet(wb, nap_mismatches, id_format_issues):
     """
     NAP Issues sheet — renders only the blocks that have rows:
-      • NAP Mismatches
-      • NAP Naming Issues
-      • Warnings (NAP Specs)
+    • NAP Mismatches
+    • NAP Naming Issues
+    • Warnings (NAP Specs)
 
-    If a block has no rows (and SHOW_ALL_SHEETS is False), it is omitted entirely.
-    Blocks are laid out left→right with a 1-column gutter between them.
+    Also guarantees uniqueness:
+    - Removes any existing 'NAP Issues' sheet before writing (prevents double render).
+    - De-duplicates rows within each block.
+    - Collapses duplicate Spec-Warning tokens per (NAP ID, Field, Value) with priority:
+        Wrong Format > Misspelt > Case Mismatch
     """
+    import re
     from modules.simple_scripts.nap_rules import scan_nap_spec_warnings
 
+    # --- Safety: ensure we don't render this sheet twice ---
+    for _ws in list(wb.worksheets):
+        if _ws.title == "NAP Issues":
+            wb.remove(_ws)
+            break
+
     ws = wb.create_sheet(title="NAP Issues")
-    ws.freeze_panes = "A3"  # lock headers
+    ws.freeze_panes = "A3"
 
     bold = Font(bold=True)
     center = Alignment(horizontal='center')
+    show_all = bool(getattr(modules.config, "SHOW_ALL_SHEETS", False))
 
     def _join(v):
         if v is None:
@@ -1300,7 +1311,36 @@ def write_nap_issues_sheet(wb, nap_mismatches, id_format_issues):
             return ", ".join(str(x) for x in v)
         return str(v)
 
-    show_all = bool(getattr(modules.config, "SHOW_ALL_SHEETS", False))
+    def _dedupe_rows(rows):
+        """Simple exact-row de-duplication preserving order."""
+        seen = set()
+        out = []
+        for r in rows:
+            key = tuple(r)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(r)
+        return out
+
+    def _dedupe_spec_rows(rows):
+        """
+        Collapse duplicates where (NAP ID, Field, normalized Value) matches.
+        Keep the highest-priority issue label.
+        """
+        prio = {"Wrong Format": 3, "Misspelt": 2, "Case Mismatch": 1}
+        best = {}
+        order = []
+        for napid, field, val, hint, issue in rows:
+            norm_val = str(val).strip().lower()
+            key = (str(napid), str(field), norm_val)
+            if key not in best:
+                best[key] = [napid, field, val, hint, issue]
+                order.append(key)
+            else:
+                if prio.get(issue, 0) > prio.get(best[key][4], 0):
+                    best[key] = [napid, field, val, hint, issue]
+        return [best[k] for k in order]
 
     # --- Build rows for each logical block ---
 
@@ -1319,6 +1359,7 @@ def write_nap_issues_sheet(wb, nap_mismatches, id_format_issues):
             miss_idx = rec[2] if isinstance(rec, (list, tuple)) and len(rec) > 2 else []
             miss_col = rec[3] if isinstance(rec, (list, tuple)) and len(rec) > 3 else []
         a_rows.append([nap, loose, _join(miss_idx), _join(miss_col), "Loose-tube color mismatch"])
+    a_rows = _dedupe_rows(a_rows)
 
     # B) NAP Naming Issues
     b_headers = ["NAP", "Vetro ID", "Issue"]
@@ -1331,18 +1372,31 @@ def write_nap_issues_sheet(wb, nap_mismatches, id_format_issues):
             nap_id = rec.get("nap_id") or rec.get("nap") or rec.get("NAP") or ""
             vetro_id = rec.get("vetro_id") or rec.get("Vetro ID") or ""
         b_rows.append([nap_id, vetro_id, "NAP ID format issue"])
+    b_rows = _dedupe_rows(b_rows)
 
-    # C) Spec warnings (computed within this writer)
+    # C) Spec warnings — specific “Issue” labels
     c_headers = ["NAP ID", "Field", "Value", "Hint", "Issue"]
     c_rows = []
     for rec in scan_nap_spec_warnings() or []:
-        c_rows.append([
-            rec.get("NAP ID", "") or rec.get("nap_id", ""),
-            rec.get("Field", "") or rec.get("field", ""),
-            rec.get("Value", "") or rec.get("value", ""),
-            rec.get("Hint", "") or rec.get("hint", ""),
-            "Spec warning",
-        ])
+        napid = rec.get("NAP ID", "") or rec.get("nap_id", "")
+        field = rec.get("Field", "") or rec.get("field", "")
+        val = rec.get("Value", "") or rec.get("value", "")
+        hint = rec.get("Hint", "") or rec.get("hint", "")
+
+        # Specific issue label
+        if hint and val and str(val) != str(hint):
+            issue = "Case Mismatch"
+        else:
+            if re.search(r"[^A-Za-z]", str(val)):  # punctuation/digits/extra whitespace
+                issue = "Wrong Format"
+            else:
+                issue = "Misspelt"
+
+        c_rows.append([napid, field, val, hint, issue])
+
+    # First exact-row dedupe, then token-level collapsing
+    c_rows = _dedupe_rows(c_rows)
+    c_rows = _dedupe_spec_rows(c_rows)
 
     # --- Collect blocks that should actually render ---
     blocks = []
@@ -1353,28 +1407,28 @@ def write_nap_issues_sheet(wb, nap_mismatches, id_format_issues):
     if c_rows or show_all:
         blocks.append(("Warnings (NAP Specs)", c_headers, c_rows))
 
-    # If there’s truly nothing to show (and not SHOW_ALL), drop the sheet.
+    # If nothing to show (and not SHOW_ALL), drop the sheet.
     if not blocks and not show_all:
         wb.remove(ws)
         return
 
-    # --- Render the chosen blocks side-by-side ---
+    # --- Render side-by-side blocks ---
     GAP = 1
     col = 1
     for title, headers, rows in blocks:
-        # Title row (1), merged to the width of headers
+        # Title row
         ws.merge_cells(start_row=1, start_column=col, end_row=1, end_column=col + len(headers) - 1)
         tcell = ws.cell(row=1, column=col, value=title)
         tcell.font = bold
         tcell.alignment = center
 
-        # Header row (2)
+        # Header row
         for i, h in enumerate(headers, start=col):
             hc = ws.cell(row=2, column=i, value=h)
             hc.font = bold
             hc.alignment = center
 
-        # Data starting at row 3
+        # Data rows
         r = 3
         for row_vals in rows:
             for i, val in enumerate(row_vals, start=col):
@@ -1383,19 +1437,20 @@ def write_nap_issues_sheet(wb, nap_mismatches, id_format_issues):
 
         col += len(headers) + GAP
 
+    # Logging blocks (deduped)
     from modules.basic.log_configs import format_table_lines
-
-    # Error-only logging for each NAP block (no Excel mirror)
     if a_rows:
         logger.error(f"==== [NAP Mismatches] Errors ({len(a_rows)}) ====")
         for line in format_table_lines(a_headers, a_rows):
             logger.error(f"[NAP Mismatches] {line}")
         logger.info("==== End [NAP Mismatches] Errors ====")
+
     if b_rows:
         logger.error(f"==== [NAP Naming Issues] Errors ({len(b_rows)}) ====")
         for line in format_table_lines(b_headers, b_rows):
             logger.error(f"[NAP Naming Issues] {line}")
         logger.info("==== End [NAP Naming Issues] Errors ====")
+
     if c_rows:
         logger.error(f"==== [Warnings (NAP Specs)] Errors ({len(c_rows)}) ====")
         for line in format_table_lines(c_headers, c_rows):

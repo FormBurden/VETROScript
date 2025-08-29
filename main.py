@@ -292,10 +292,12 @@ def main(data_dir=None, gui_out_path=None):
             if modules.config.SHOW_ALL_SHEETS or sl_attr_issues:
                 write_service_location_attr_issues(wb, sl_attr_issues)
 
-        # NAP-Drop / ID-Format Validation
-        nap_issues       = find_nap_drop_mismatches()
+        # NAP-Drop / ID-Format Validation (+ include Spec Warnings so the sheet appears)
+        from modules.simple_scripts.nap_rules import scan_nap_spec_warnings
+        nap_issues = find_nap_drop_mismatches()
         id_format_issues = find_nap_id_format_issues()
-        if modules.config.SHOW_ALL_SHEETS or nap_issues or id_format_issues:
+        spec_warnings = scan_nap_spec_warnings()
+        if modules.config.SHOW_ALL_SHEETS or nap_issues or id_format_issues or spec_warnings:
             write_nap_issues_sheet(wb, nap_issues, id_format_issues)
 
         # Power Pole anchor‐check
